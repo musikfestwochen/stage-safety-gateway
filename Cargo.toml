@@ -1,0 +1,6 @@
+[package]
+name = "stage-safety-gateway"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Broadweigh wind-sensor gateway for Musikfestapp"

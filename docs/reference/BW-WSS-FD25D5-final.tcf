@@ -1,0 +1,48 @@
+[Data]
+Type=T24
+Version=02.25
+Saved=23 Juli 2026
+[Information]
+Model=T24-wssx
+ID=FD25D5
+FirmwareVersion=3.01
+FunctionID=0
+ProductID=0
+Status=28
+[Factory Calibration]
+BatteryGain=0.0039788
+FactoryGain=1.002911
+[Radio Configuration]
+UseCSMA=1
+Repeater=0
+RepeaterGroup=0
+VerMajor=4
+VerMinor=1
+WakeChkInt=5000
+WakerDuration=12000
+AlwaysWake=0
+[Read Write]
+Name=WINDMESSER1
+RepeaterGroup=0
+Channel=1
+Key=00000000000000000000000000000000
+Power=100
+WakeChkInt=5000
+TXInterval=5000
+LowPowerMode=2
+SampleTime=10000
+SleepDelay=0
+DataTag=25DF
+StartupTime=10
+BattLowLevel=2.2
+Gain=1.1176
+Offset=0
+Settings=1
+OutputType=255
+PulsesPerRevolution=1
+DebounceTime=0
+TriggerCounterReset=AAAA
+[Settings]
+Resistors=Pull Down
+Excitation=3V
+Edge=Falling
