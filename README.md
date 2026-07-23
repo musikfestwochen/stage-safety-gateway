@@ -20,6 +20,9 @@ contract in [musikfestapp#195](https://github.com/musikfestwochen/musikfestapp/i
 cargo test
 ```
 
+The regression fixture in [`tests/fixtures/bw-wss-mps.hex`](tests/fixtures/bw-wss-mps.hex)
+is a real 316-frame m/s recording stored as contiguous hexadecimal bytes.
+
 The decoder accepts an arbitrary byte stream, resynchronizes after noise or
 invalid frames, validates Modbus CRC-16, and returns only valid BW-WSS float
 Data Provider frames.
