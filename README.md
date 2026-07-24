@@ -3,13 +3,15 @@
 [![Crates.io](https://img.shields.io/crates/v/stage-safety-gateway)](https://crates.io/crates/stage-safety-gateway)
 [![docs.rs](https://img.shields.io/docsrs/stage-safety-gateway)](https://docs.rs/stage-safety-gateway)
 [![License](https://img.shields.io/crates/l/stage-safety-gateway)](LICENSE)
+[![Status](https://img.shields.io/badge/status-in%20development-orange)](#)
 
 Gateway between stage-safety sensors (Broadweigh / Mantracourt) and the
 [Musikfestapp](https://github.com/musikfestwochen/musikfestapp) Stage Safety API.
 Currently supports the BW-WSS wind sensor via a T24 base station.
 
-The repository contains the verified, dependency-free T24 value-frame decoder.
-Serial I/O, aggregation, and HTTP forwarding will follow.
+The repository contains the verified T24 value-frame decoder. The gateway is
+under active development; not all components documented below are implemented
+yet.
 
 ## Installation
 
@@ -22,6 +24,7 @@ cargo install stage-safety-gateway
 ```sh
 stage-safety-gateway config           # interactive setup wizard
 stage-safety-gateway config validate  # check config, print redacted summary
+stage-safety-gateway listen           # decode serial (or --stdin) and print readings
 stage-safety-gateway run              # start the gateway (not implemented yet)
 ```
 

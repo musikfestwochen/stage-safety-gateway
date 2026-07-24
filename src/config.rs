@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+use crate::ReadingKind;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -306,6 +308,23 @@ impl Config {
         out
     }
 
+    /// Resolves a received `tag` against configured sensors. Returns the owning
+    /// `BwWssSensor` and the inferred reading kind: `data_tag` → `Average`,
+    /// `data_tag + 1` (gust enabled) → `Gust`. Search stops at the first match;
+    /// [`Config::validate`] rejects colliding tags so ownership is unique.
+    pub fn match_tag(&self, tag: u16) -> Option<(&BwWssSensor, ReadingKind)> {
+        for sensor in &self.sensors {
+            let Sensor::BwWss(s) = sensor;
+            if s.data_tag == tag {
+                return Some((s, ReadingKind::Average));
+            }
+            if s.gust && s.data_tag.checked_add(1) == Some(tag) {
+                return Some((s, ReadingKind::Gust));
+            }
+        }
+        None
+    }
+
     /// Returns the owning sensor's display name if `tag` is already occupied by
     /// an existing sensor's base or gust slot. Used by the wizard to reject
     /// colliding tags inline.
@@ -487,5 +506,51 @@ mod tests {
         let summary = example_config().summary();
         assert!(summary.contains("********"), "{summary}");
         assert!(!summary.contains("secret"), "{summary}");
+    }
+
+    #[test]
+    fn match_tag_resolves_base_and_gust() {
+        let config = example_config();
+        let (s, kind) = config.match_tag(0x25DF).unwrap();
+        assert_eq!(s.display_name(), "WINDMESSER1");
+        assert_eq!(kind, ReadingKind::Average);
+        let (_, kind) = config.match_tag(0x25E0).unwrap();
+        assert_eq!(kind, ReadingKind::Gust);
+        assert!(config.match_tag(0x1234).is_none());
+    }
+
+    /// `data_tag = FFFF` with `gust = true` is rejected by `validate`, but
+    /// `match_tag` must still be safe on an unvalidated `Config` (e.g. opened
+    /// via `Config::read` in the wizard): the gust branch returns `None`
+    /// instead of silently matching tag `0000` via wrap-around.
+    #[test]
+    fn match_tag_does_not_wrap_on_overflow() {
+        let config = Config {
+            serial: SerialConfig {
+                port: "/dev/ttyUSB0".into(),
+                baud_rate: 115200,
+            },
+            aggregation: AggregationConfig {
+                change_percent: 20.0,
+                min_interval_secs: 30,
+                max_interval_secs: 300,
+            },
+            sensors: vec![Sensor::BwWss(BwWssSensor {
+                name: "OVERFLOW".into(),
+                id: "1A2B3F".into(),
+                unit: WindUnit::Mps,
+                data_tag: 0xFFFF,
+                gust: true,
+                average_window_secs: 10,
+                gust_window_secs: 10,
+                url: "https://example".into(),
+                token: "secret".into(),
+            })],
+        };
+        assert!(config.match_tag(0xFFFF).is_some()); // base still matches
+        assert!(
+            config.match_tag(0x0000).is_none(),
+            "gust slot must not wrap to 0x0000"
+        );
     }
 }
