@@ -410,24 +410,32 @@ fn listen(config: &Config, stdin: bool) -> Result<()> {
     if stdin {
         let stdin = std::io::stdin();
         let mut lock = stdin.lock();
-        return listen_once(&mut lock, config);
+        return Ok(listen_once(&mut lock, config)?);
     }
 
     loop {
-        match serialport::new(&config.serial.port, config.serial.baud_rate).open() {
-            Ok(mut port) => {
-                if let Err(e) = listen_once(&mut port, config) {
+        match serialport::new(&config.serial.port, config.serial.baud_rate)
+            .timeout(Duration::from_secs(1))
+            .open()
+        {
+            Ok(mut port) => match listen_once(&mut port, config) {
+                Ok(()) => return Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return Ok(()),
+                Err(e) => {
                     eprintln!("  ! serial read error: {e}");
+                    std::thread::sleep(Duration::from_secs(1));
                 }
+            },
+            Err(e) => {
+                eprintln!("  ! cannot open {}: {e}", config.serial.port);
+                std::thread::sleep(Duration::from_secs(1));
             }
-            Err(e) => eprintln!("  ! cannot open {}: {e}", config.serial.port),
         }
-        eprintln!("  ! retrying in 1s");
-        std::thread::sleep(Duration::from_secs(1));
     }
 }
 
-fn listen_once<R: Read>(input: &mut R, config: &Config) -> Result<()> {
+fn listen_once<R: Read>(input: &mut R, config: &Config) -> std::io::Result<()> {
     let mut frames = 0u64;
     let mut drained = 0usize;
     let mut dropped = 0u64;
