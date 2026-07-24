@@ -225,8 +225,8 @@ fn edit_aggregation(config: &mut Config) -> Result<()> {
         )
         .with_validator(|input: &str| {
             Ok(match input.parse::<f64>() {
-                Ok(value) if value >= 0.0 => Validation::Valid,
-                _ => Validation::Invalid("enter a number >= 0".into()),
+                Ok(value) if value.is_finite() && value >= 0.0 => Validation::Valid,
+                _ => Validation::Invalid("enter a finite number >= 0".into()),
             })
         })
         .prompt()?;

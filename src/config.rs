@@ -80,7 +80,7 @@ impl Sensor {
         match self {
             Sensor::BwWss(s) => format!(
                 "{} [bw-wss] id={} tag={:04X} unit={} avg={}s gust={} url={} token={}",
-                s.name,
+                s.display_name(),
                 s.id,
                 s.data_tag,
                 s.unit.as_str(),
@@ -209,8 +209,8 @@ impl Config {
         if self.serial.baud_rate == 0 {
             problems.push("serial.baud_rate must be positive".to_string());
         }
-        if self.aggregation.change_percent < 0.0 {
-            problems.push("aggregation.change_percent must be >= 0".to_string());
+        if !self.aggregation.change_percent.is_finite() || self.aggregation.change_percent < 0.0 {
+            problems.push("aggregation.change_percent must be a finite number >= 0".to_string());
         }
         if self.aggregation.max_interval_secs == 0 {
             problems.push("aggregation.max_interval_secs must be positive".to_string());
@@ -402,6 +402,19 @@ mod tests {
                 "missing {expected:?} in {message}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_non_finite_change_percent() {
+        let mut config = example_config();
+        config.aggregation.change_percent = f64::NAN;
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("finite number"));
+        config.aggregation.change_percent = f64::INFINITY;
+        assert!(config.validate().is_err());
     }
 
     #[test]
