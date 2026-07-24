@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/musikfestwochen/stage-safety-gateway/compare/v0.1.0...v0.1.1) - 2026-07-24
+
+### Other
+
+- Reject inknown fields
+- Reject non-finite change_percent; use display_name in details
+- Use sensor display name in messages + share tag-occupied check with wizard
+- Address review: gust-tag validation, 0600 config creation, wizard repair flow
+- Add config model and interactive config CLI
+- release v0.1.0
+
 ## [0.1.0](https://github.com/musikfestwochen/stage-safety-gateway/releases/tag/v0.1.0) - 2026-07-23
 
 ### Other
