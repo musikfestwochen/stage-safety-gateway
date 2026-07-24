@@ -1,5 +1,10 @@
 //! Broadweigh BW-WSS value-frame decoder.
 
+use std::fmt;
+use std::io::Read;
+
+use chrono::{DateTime, SecondsFormat, Utc};
+
 pub mod config;
 
 pub const FRAME_LEN: usize = 16;
@@ -100,5 +105,373 @@ pub fn next_frame(buffer: &mut Vec<u8>) -> Option<Frame> {
                 buffer.remove(0);
             }
         }
+    }
+}
+
+/// Like [`next_frame`], but reports how many non-frame bytes were discarded while
+/// searching since the last call (lead-in trash, invalid-frame resync steps).
+/// The 16 bytes of a successfully returned frame are not counted as discarded.
+pub fn next_frame_with_drain(buffer: &mut Vec<u8>) -> (Option<Frame>, usize) {
+    let len_in = buffer.len();
+    let frame = next_frame(buffer);
+    let frame_bytes = if frame.is_some() { FRAME_LEN } else { 0 };
+    let drain = len_in
+        .saturating_sub(buffer.len())
+        .saturating_sub(frame_bytes);
+    (frame, drain)
+}
+
+/// Reading kind produced by classifying a decoded [`Frame`] against the
+/// configured `data_tag` (average) and `data_tag + 1` (gust, when enabled).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadingKind {
+    Average,
+    Gust,
+}
+
+impl fmt::Display for ReadingKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            ReadingKind::Average => "average",
+            ReadingKind::Gust => "gust",
+        })
+    }
+}
+
+/// One classified, timestamped reading ready for forwarding. The HTTP request
+/// payload (story #4) mirrors `kind`, `value`, `unit`, `window_seconds`,
+/// `battery_low`, `rssi_db`, `cv`; `observed_at` is the outer request field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reading<'a> {
+    pub sensor: &'a str,
+    pub kind: ReadingKind,
+    pub observed_at: DateTime<Utc>,
+    pub value: f32,
+    pub unit: config::WindUnit,
+    pub window_seconds: u64,
+    pub battery_low: bool,
+    pub rssi_db: i16,
+    pub cv: u8,
+}
+
+impl fmt::Display for Reading<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}  {}  {}  {:.4}  {}  win={}s  rssi={}dB  cv={}  bat={}",
+            self.observed_at
+                .to_rfc3339_opts(SecondsFormat::Millis, true),
+            self.sensor,
+            self.kind,
+            self.value,
+            self.unit,
+            self.window_seconds,
+            self.rssi_db,
+            self.cv,
+            self.battery_low,
+        )
+    }
+}
+
+/// Events emitted by [`run_reader`] in stream order.
+pub enum ReaderEvent<'a> {
+    /// A decoded frame matched a configured sensor's tag.
+    Reading(Reading<'a>),
+    /// `n` non-frame bytes were discarded since the previous event. Coalesced,
+    /// so this fires at most once between readings (or once per drained batch
+    /// when the input ends without a final frame).
+    Drained(usize),
+    /// A decoded frame passed CRC/type checks but its tag matched no configured
+    /// sensor. Useful on-bench signal: the listener exposes it, the daemon drops
+    /// it silently.
+    Unconfigured(Frame),
+    /// End of input.
+    Eof,
+}
+
+/// Feeds `input` into the decoder, classifies frames against `config`, and emits
+/// [`ReaderEvent`]s to `on_event` in stream order. Reuses the existing
+/// [`next_frame`], so resync behaviour is unchanged from the decoder tests.
+///
+/// For real serial ports the caller opens the port and passes a `&mut` handle;
+/// for replay tests it passes a `Cursor<Vec<u8>>`. Backoff-and-reopen on unplug
+/// is the daemon reader's concern; this function returns on the first `Read`
+/// error so the caller decides retry policy.
+pub fn run_reader<R: Read>(
+    input: &mut R,
+    config: &config::Config,
+    mut on_event: impl FnMut(ReaderEvent<'_>),
+) -> std::io::Result<()> {
+    let mut buf: Vec<u8> = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    let mut pending_drain = 0usize;
+
+    loop {
+        let n = input.read(&mut chunk)?;
+        if n == 0 {
+            if pending_drain > 0 {
+                on_event(ReaderEvent::Drained(pending_drain));
+            }
+            on_event(ReaderEvent::Eof);
+            return Ok(());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        loop {
+            let (opt, drain) = next_frame_with_drain(&mut buf);
+            if drain > 0 {
+                pending_drain += drain;
+            }
+            if let Some(frame) = opt {
+                flush_drain(&mut pending_drain, &mut on_event);
+                match classify(&frame, config, Utc::now()) {
+                    Some(reading) => on_event(ReaderEvent::Reading(reading)),
+                    None => on_event(ReaderEvent::Unconfigured(frame)),
+                }
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+/// Emits a coalesced `Drained(n)` event if any bytes have been discarded since
+/// the last non-drained event, then clears the accumulator.
+fn flush_drain(pending: &mut usize, on_event: &mut impl FnMut(ReaderEvent<'_>)) {
+    if *pending > 0 {
+        on_event(ReaderEvent::Drained(*pending));
+        *pending = 0;
+    }
+}
+
+/// Stamps `frame` with `observed_at` if it matches a configured sensor's base
+/// tag (→ `Average`) or, when gust is enabled, `data_tag + 1` (→ `Gust`).
+/// Otherwise returns `None`. Pure: trivially unit-testable, identical mapping
+/// used by the daemon reader thread later.
+pub fn classify<'a>(
+    frame: &Frame,
+    config: &'a config::Config,
+    observed_at: DateTime<Utc>,
+) -> Option<Reading<'a>> {
+    let (sensor, kind) = config.match_tag(frame.tag)?;
+    Some(Reading {
+        sensor: sensor.display_name(),
+        kind,
+        observed_at,
+        value: frame.value,
+        unit: sensor.unit,
+        window_seconds: match kind {
+            ReadingKind::Average => sensor.average_window_secs,
+            ReadingKind::Gust => sensor.gust_window_secs,
+        },
+        battery_low: frame.low_battery,
+        rssi_db: frame.rssi_db,
+        cv: frame.cv,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AggregationConfig, BwWssSensor, Config, Sensor, SerialConfig, WindUnit};
+
+    fn sensor(name: &str, data_tag: u16, gust: bool) -> BwWssSensor {
+        BwWssSensor {
+            name: name.into(),
+            id: "1A2B3F".into(),
+            unit: WindUnit::Mps,
+            data_tag,
+            gust,
+            average_window_secs: 10,
+            gust_window_secs: 10,
+            url: "https://example".into(),
+            token: "secret".into(),
+        }
+    }
+
+    fn config_with(sensors: Vec<BwWssSensor>) -> Config {
+        Config {
+            serial: SerialConfig {
+                port: "/dev/ttyUSB0".into(),
+                baud_rate: 115200,
+            },
+            aggregation: AggregationConfig {
+                change_percent: 20.0,
+                min_interval_secs: 30,
+                max_interval_secs: 300,
+            },
+            sensors: sensors.into_iter().map(Sensor::BwWss).collect(),
+        }
+    }
+
+    fn frame(tag: u16, low_battery: bool) -> Frame {
+        Frame {
+            base_address: 1,
+            packet_type: 0x23,
+            tag,
+            status: if low_battery { 0x3c } else { 0x1c },
+            value: 1.5,
+            rssi_db: -50,
+            cv: 100,
+            broadcast: true,
+            low_battery,
+            error: false,
+        }
+    }
+
+    #[test]
+    fn classify_maps_base_tag_to_average() {
+        let config = config_with(vec![sensor("WIND", 0x25df, true)]);
+        let now = Utc::now();
+        let reading = classify(&frame(0x25df, false), &config, now).unwrap();
+        assert_eq!(reading.sensor, "WIND");
+        assert_eq!(reading.kind, ReadingKind::Average);
+        assert_eq!(reading.window_seconds, 10);
+        assert_eq!(reading.unit, WindUnit::Mps);
+        assert!(!reading.battery_low);
+        assert_eq!(reading.observed_at, now);
+    }
+
+    #[test]
+    fn classify_maps_gust_tag_only_when_enabled() {
+        let enabled = config_with(vec![sensor("WIND", 0x25df, true)]);
+        let reading = classify(&frame(0x25e0, false), &enabled, Utc::now()).unwrap();
+        assert_eq!(reading.kind, ReadingKind::Gust);
+        assert_eq!(reading.window_seconds, 10);
+
+        let disabled = config_with(vec![sensor("WIND", 0x25df, false)]);
+        assert_eq!(
+            classify(&frame(0x25e0, false), &disabled, Utc::now()),
+            None,
+            "gust tag must be dropped when gust disabled"
+        );
+    }
+
+    #[test]
+    fn classify_drops_unconfigured_tag() {
+        let config = config_with(vec![sensor("WIND", 0x25df, true)]);
+        assert_eq!(classify(&frame(0x3000, false), &config, Utc::now()), None);
+    }
+
+    #[test]
+    fn classify_propagates_battery_flag() {
+        let config = config_with(vec![sensor("WIND", 0x25df, true)]);
+        let reading = classify(&frame(0x25df, true), &config, Utc::now()).unwrap();
+        assert!(reading.battery_low);
+    }
+
+    #[test]
+    fn reading_display_format_includes_millisecond_rfc3339_and_kinds() {
+        let config = config_with(vec![sensor("WIND", 0x25df, true)]);
+        let now = Utc::now();
+        let reading = classify(&frame(0x25df, false), &config, now).unwrap();
+        let line = format!("{reading}");
+        assert!(
+            line.starts_with(&now.to_rfc3339_opts(SecondsFormat::Millis, true)),
+            "{line}"
+        );
+        assert!(line.contains("  WIND  "), "{line}");
+        assert!(line.contains("average"), "{line}");
+        assert!(line.contains("  m/s  "), "{line}");
+        assert!(line.contains("win=10s"), "{line}");
+        assert!(line.contains("bat=false"), "{line}");
+    }
+
+    #[test]
+    fn reader_emits_drained_then_reading_for_resync_noise() {
+        let config = config_with(vec![sensor("WIND", 0x25df, true)]);
+        // Reference average frame from protocol.md, tag 25DF, CRC valid.
+        let frame_bytes: [u8; 16] = [
+            0x0b, 0x0b, 0x01, 0x23, 0x25, 0xdf, 0x1c, 0x04, 0x3f, 0x0f, 0x4e, 0x9f, 0xfb, 0xe8,
+            0x5e, 0xa6,
+        ];
+        let mut stream = vec![0xff, 0x00]; // lead-in garbage
+        stream.extend_from_slice(&frame_bytes);
+        let mut cursor = std::io::Cursor::new(stream);
+
+        #[derive(Debug, PartialEq)]
+        enum Mk {
+            Drained(usize),
+            Kind(String),
+            Unconfigured(u16),
+            Eof,
+        }
+        let mut events: Vec<Mk> = Vec::new();
+        run_reader(&mut cursor, &config, |event| match event {
+            ReaderEvent::Reading(r) => events.push(Mk::Kind(r.kind.to_string())),
+            ReaderEvent::Drained(n) => events.push(Mk::Drained(n)),
+            ReaderEvent::Unconfigured(f) => events.push(Mk::Unconfigured(f.tag)),
+            ReaderEvent::Eof => events.push(Mk::Eof),
+        })
+        .unwrap();
+
+        assert_eq!(
+            events,
+            vec![Mk::Drained(2), Mk::Kind("average".into()), Mk::Eof,]
+        );
+    }
+
+    #[test]
+    fn reader_filters_unconfigured_valid_tag() {
+        let config = config_with(vec![sensor("WIND", 0x25df, true)]);
+        // Same skeleton but spoof the tag to 0x3000 — keep the CRC by recomputing.
+        let mut frame_bytes: [u8; 16] = [
+            0x0b, 0x0b, 0x01, 0x23, 0x30, 0x00, 0x1c, 0x04, 0x3f, 0x0f, 0x4e, 0x9f, 0xfb, 0xe8, 0,
+            0,
+        ];
+        let crc = crc16_modbus(&frame_bytes[..14]);
+        frame_bytes[14] = (crc & 0xff) as u8;
+        frame_bytes[15] = (crc >> 8) as u8;
+        let mut cursor = std::io::Cursor::new(frame_bytes.to_vec());
+
+        let mut readings = 0u64;
+        let mut unconfigured = 0u64;
+        run_reader(&mut cursor, &config, |event| {
+            if let ReaderEvent::Reading(_) = event {
+                readings += 1;
+            } else if let ReaderEvent::Unconfigured(_) = event {
+                unconfigured += 1;
+            }
+        })
+        .unwrap();
+
+        assert_eq!(readings, 0);
+        assert_eq!(unconfigured, 1);
+    }
+
+    /// `Drained` must fire before the next event regardless of whether that
+    /// event is `Reading` or `Unconfigured`, so resync noise stays chronological.
+    #[test]
+    fn reader_flushes_drain_before_unconfigured_event() {
+        let config = config_with(vec![sensor("WIND", 0x25df, true)]);
+        let mut frame_bytes: [u8; 16] = [
+            0x0b, 0x0b, 0x01, 0x23, 0x30, 0x00, 0x1c, 0x04, 0x3f, 0x0f, 0x4e, 0x9f, 0xfb, 0xe8, 0,
+            0,
+        ];
+        let crc = crc16_modbus(&frame_bytes[..14]);
+        frame_bytes[14] = (crc & 0xff) as u8;
+        frame_bytes[15] = (crc >> 8) as u8;
+        let mut stream = vec![0xff, 0x00]; // lead-in garbage before unconfigured frame
+        stream.extend_from_slice(&frame_bytes);
+        let mut cursor = std::io::Cursor::new(stream);
+
+        #[derive(Debug, PartialEq)]
+        enum Mk {
+            Drained(usize),
+            Unconfigured(u16),
+            Eof,
+        }
+        let mut events: Vec<Mk> = Vec::new();
+        run_reader(&mut cursor, &config, |event| match event {
+            ReaderEvent::Drained(n) => events.push(Mk::Drained(n)),
+            ReaderEvent::Unconfigured(f) => events.push(Mk::Unconfigured(f.tag)),
+            ReaderEvent::Eof => events.push(Mk::Eof),
+            ReaderEvent::Reading(_) => {}
+        })
+        .unwrap();
+
+        assert_eq!(
+            events,
+            vec![Mk::Drained(2), Mk::Unconfigured(0x3000), Mk::Eof]
+        );
     }
 }

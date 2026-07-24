@@ -9,7 +9,10 @@ use inquire::{Confirm, Password, PasswordDisplayMode, Select, Text};
 use stage_safety_gateway::config::{
     AggregationConfig, BwWssSensor, Config, Sensor, SerialConfig, WindUnit, DEFAULT_URL,
 };
+use stage_safety_gateway::{run_reader, ReaderEvent};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(
@@ -33,6 +36,15 @@ enum Commands {
     },
     /// Start the gateway daemon (not implemented yet).
     Run,
+    /// Decode serial input (or stdin) and print parsed readings.
+    /// Diagnostic mode: no network, no daemon. Resync noise and dropped
+    /// unconfigured frames surface as `[…]` lines between readings.
+    Listen {
+        /// Read raw bytes from stdin instead of `serial.port`. Replay a capture
+        /// with e.g. `xxd -r -p tests/fixtures/bw-wss-mps.hex | ssg listen --stdin`.
+        #[arg(long)]
+        stdin: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -57,6 +69,10 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Run => bail!("`run` is not implemented yet"),
+        Commands::Listen { stdin } => {
+            let config = Config::load(&path)?;
+            listen(&config, stdin)
+        }
     }
 }
 
@@ -388,4 +404,52 @@ fn positive_u32(input: &str) -> Result<Validation, inquire::CustomUserError> {
         Ok(value) if value > 0 => Validation::Valid,
         _ => Validation::Invalid("enter a positive integer".into()),
     })
+}
+
+fn listen(config: &Config, stdin: bool) -> Result<()> {
+    if stdin {
+        let stdin = std::io::stdin();
+        let mut lock = stdin.lock();
+        return listen_once(&mut lock, config);
+    }
+
+    loop {
+        match serialport::new(&config.serial.port, config.serial.baud_rate).open() {
+            Ok(mut port) => {
+                if let Err(e) = listen_once(&mut port, config) {
+                    warn(&format!("serial read error: {e}"));
+                }
+            }
+            Err(e) => warn(&format!("cannot open {}: {e}", config.serial.port)),
+        }
+        warn("retrying in 1s");
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+fn listen_once<R: Read>(input: &mut R, config: &Config) -> Result<()> {
+    let mut frames = 0u64;
+    let mut drained = 0usize;
+    let mut dropped = 0u64;
+    run_reader(input, config, |event| match event {
+        ReaderEvent::Reading(r) => {
+            frames += 1;
+            println!("{r}");
+        }
+        ReaderEvent::Drained(n) => {
+            drained += n;
+            eprintln!("[+{n} bytes ignored resync]  total discarded: {drained}");
+        }
+        ReaderEvent::Unconfigured(frame) => {
+            dropped += 1;
+            eprintln!(
+                "[dropped: valid frame tag {:04X} value {:.4} rssi={}dB cv={}]  total dropped: {dropped}",
+                frame.tag, frame.value, frame.rssi_db, frame.cv
+            );
+        }
+        ReaderEvent::Eof => {
+            eprintln!("[end of input]  frames={frames} discarded={drained} dropped={dropped}");
+        }
+    })?;
+    Ok(())
 }
