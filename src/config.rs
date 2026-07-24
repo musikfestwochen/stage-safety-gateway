@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub serial: SerialConfig,
     pub aggregation: AggregationConfig,
@@ -14,12 +15,14 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SerialConfig {
     pub port: String,
     pub baud_rate: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct AggregationConfig {
     /// Relative change from the last sent value (percent) that triggers an
     /// immediate send, per sensor and reading kind.
@@ -39,6 +42,7 @@ pub enum Sensor {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct BwWssSensor {
     /// Free-form label (toolkit `Name`), used in logs and prompts.
     #[serde(default)]
@@ -402,6 +406,21 @@ mod tests {
                 "missing {expected:?} in {message}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_unknown_keys() {
+        let text = r#"
+            [serial]
+            port = "/dev/ttyUSB0"
+            baude_rate = 115200
+            [aggregation]
+            change_percent = 20.0
+            min_interval_secs = 30
+            max_interval_secs = 300
+        "#;
+        let error = toml::from_str::<Config>(text).unwrap_err();
+        assert!(error.to_string().contains("baude_rate"), "{error}");
     }
 
     #[test]
