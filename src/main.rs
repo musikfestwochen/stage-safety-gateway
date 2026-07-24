@@ -41,7 +41,7 @@ enum Commands {
     /// unconfigured frames surface as `[…]` lines between readings.
     Listen {
         /// Read raw bytes from stdin instead of `serial.port`. Replay a capture
-        /// with e.g. `xxd -r -p tests/fixtures/bw-wss-mps.hex | ssg listen --stdin`.
+        /// with e.g. `xxd -r -p tests/fixtures/bw-wss-mps.hex | stage-safety-gateway listen --stdin`.
         #[arg(long)]
         stdin: bool,
     },
@@ -417,12 +417,12 @@ fn listen(config: &Config, stdin: bool) -> Result<()> {
         match serialport::new(&config.serial.port, config.serial.baud_rate).open() {
             Ok(mut port) => {
                 if let Err(e) = listen_once(&mut port, config) {
-                    warn(&format!("serial read error: {e}"));
+                    eprintln!("  ! serial read error: {e}");
                 }
             }
-            Err(e) => warn(&format!("cannot open {}: {e}", config.serial.port)),
+            Err(e) => eprintln!("  ! cannot open {}: {e}", config.serial.port),
         }
-        warn("retrying in 1s");
+        eprintln!("  ! retrying in 1s");
         std::thread::sleep(Duration::from_secs(1));
     }
 }
