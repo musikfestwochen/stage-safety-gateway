@@ -1,12 +1,33 @@
 # Stage Safety Gateway
 
-Rust gateway between a Broadweigh BW-WSS/T24-BSi wind sensor and the
+[![Crates.io](https://img.shields.io/crates/v/stage-safety-gateway)](https://crates.io/crates/stage-safety-gateway)
+[![docs.rs](https://img.shields.io/docsrs/stage-safety-gateway)](https://docs.rs/stage-safety-gateway)
+[![License](https://img.shields.io/crates/l/stage-safety-gateway)](LICENSE)
+
+Gateway between stage-safety sensors (Broadweigh / Mantracourt) and the
 [Musikfestapp](https://github.com/musikfestwochen/musikfestapp) Stage Safety API.
+Currently supports the BW-WSS wind sensor via a T24 base station.
 
 The repository contains the verified, dependency-free T24 value-frame decoder.
-Serial I/O, aggregation, and HTTP forwarding follow the ingestion contract in
-[musikfestapp#195](https://github.com/musikfestwochen/musikfestapp/issues/195)
-and are tracked in this repository's epic issue.
+Serial I/O, aggregation, and HTTP forwarding will follow.
+
+## Installation
+
+```sh
+cargo install stage-safety-gateway
+```
+
+## Usage
+
+```sh
+stage-safety-gateway config           # interactive setup wizard
+stage-safety-gateway config validate  # check config, print redacted summary
+stage-safety-gateway run              # start the gateway (not implemented yet)
+```
+
+Config lives in the platform config dir (Linux: `~/.config/stage-safety-gateway/config.toml`);
+override with `--config <path>`. One TOML file holds serial settings, the
+aggregation policy, and any number of type-tagged `[[sensor]]` entries.
 
 ## Documentation
 
@@ -23,15 +44,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The regression fixture in [`tests/fixtures/bw-wss-mps.hex`](tests/fixtures/bw-wss-mps.hex)
-is a real 316-frame m/s recording stored as contiguous hexadecimal bytes.
-
-## Releasing
-
-Releases are automated with [release-plz](.github/workflows/release-plz.yml):
-merging to `main` keeps a release PR up to date; merging that PR publishes to
-crates.io. Requires a `CARGO_REGISTRY_TOKEN` repository secret (crates.io API
-token with `publish-update` scope for this crate).
+The integration test in [`tests/`](tests) decodes
+[`tests/fixtures/bw-wss-mps.hex`](tests/fixtures/bw-wss-mps.hex), a real
+316-frame m/s recording stored as contiguous hexadecimal bytes, through the
+public API.
 
 The decoder accepts an arbitrary byte stream, resynchronizes after noise or
 invalid frames, validates Modbus CRC-16, and returns only valid BW-WSS float
