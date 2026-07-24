@@ -281,12 +281,8 @@ fn add_sensor(config: &mut Config) -> Result<()> {
             })
             .prompt()?;
         let tag = u16::from_str_radix(&input, 16)?;
-        if config
-            .sensors
-            .iter()
-            .any(|s| matches!(s, Sensor::BwWss(w) if w.data_tag == tag))
-        {
-            println!("tag {tag:04X} is already used by another sensor");
+        if let Some(owner) = config.tag_owner(tag) {
+            println!("tag {tag:04X} is already used by {owner}");
         } else {
             break tag;
         }

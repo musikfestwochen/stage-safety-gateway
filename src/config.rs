@@ -62,6 +62,18 @@ pub struct BwWssSensor {
 /// Default Musikfestapp ingestion endpoint, prefilled in the wizard.
 pub const DEFAULT_URL: &str = "https://musikfestapp.ch/stage-safety/readings";
 
+impl BwWssSensor {
+    /// Identifies a sensor in messages: the configured name, or the hardware
+    /// ID when `name` is left empty.
+    pub fn display_name(&self) -> &str {
+        if self.name.is_empty() {
+            &self.id
+        } else {
+            &self.name
+        }
+    }
+}
+
 impl Sensor {
     /// One-line detail view. Never prints the token.
     pub fn details(&self) -> String {
@@ -217,21 +229,24 @@ impl Config {
         for sensor in &self.sensors {
             let Sensor::BwWss(s) = sensor;
             if s.id.len() != 6 || !s.id.chars().all(|c| c.is_ascii_hexdigit()) {
-                problems.push(format!("sensor {:?}: id must be 6 hex characters", s.name));
+                problems.push(format!(
+                    "sensor {:?}: id must be 6 hex characters",
+                    s.display_name()
+                ));
             }
             if !s.url.starts_with("http://") && !s.url.starts_with("https://") {
                 problems.push(format!(
                     "sensor {:?}: url must start with http(s)://",
-                    s.name
+                    s.display_name()
                 ));
             }
             if s.token.is_empty() {
-                problems.push(format!("sensor {:?}: token is empty", s.name));
+                problems.push(format!("sensor {:?}: token is empty", s.display_name()));
             }
             if s.average_window_secs == 0 {
                 problems.push(format!(
                     "sensor {:?}: average_window_secs must be positive",
-                    s.name
+                    s.display_name()
                 ));
             }
             let mut tags = vec![s.data_tag];
@@ -239,14 +254,14 @@ impl Config {
                 if s.gust_window_secs == 0 {
                     problems.push(format!(
                         "sensor {:?}: gust_window_secs is required when gust is enabled",
-                        s.name
+                        s.display_name()
                     ));
                 }
                 match s.data_tag.checked_add(1) {
                     Some(gust_tag) => tags.push(gust_tag),
                     None => problems.push(format!(
                         "sensor {:?}: data_tag FFFF leaves no room for the gust tag",
-                        s.name
+                        s.display_name()
                     )),
                 }
             }
@@ -254,10 +269,11 @@ impl Config {
                 if let Some((_, owner)) = occupied.iter().find(|(t, _)| *t == tag) {
                     problems.push(format!(
                         "sensor {:?}: tag {tag:04X} collides with sensor {:?}",
-                        s.name, owner
+                        s.display_name(),
+                        owner
                     ));
                 } else {
-                    occupied.push((tag, s.name.as_str()));
+                    occupied.push((tag, s.display_name()));
                 }
             }
         }
@@ -284,6 +300,25 @@ impl Config {
             out.push_str(&format!("\n  - {}", sensor.details()));
         }
         out
+    }
+
+    /// Returns the owning sensor's display name if `tag` is already occupied by
+    /// an existing sensor's base or gust slot. Used by the wizard to reject
+    /// colliding tags inline.
+    pub fn tag_owner(&self, tag: u16) -> Option<String> {
+        for sensor in &self.sensors {
+            let Sensor::BwWss(s) = sensor;
+            let mut tags = vec![s.data_tag];
+            if s.gust {
+                if let Some(gust_tag) = s.data_tag.checked_add(1) {
+                    tags.push(gust_tag);
+                }
+            }
+            if tags.contains(&tag) {
+                return Some(s.display_name().to_string());
+            }
+        }
+        None
     }
 }
 
@@ -387,6 +422,32 @@ mod tests {
         s.data_tag = 0xFFFF;
         let message = config.validate().unwrap_err().to_string();
         assert!(message.contains("no room for the gust tag"), "{message}");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_id() {
+        let mut s = BwWssSensor {
+            name: String::new(),
+            id: "1A2B3F".into(),
+            unit: WindUnit::Mps,
+            data_tag: 0x25DF,
+            gust: false,
+            average_window_secs: 10,
+            gust_window_secs: 0,
+            url: "https://musikfest.example".into(),
+            token: "secret".into(),
+        };
+        assert_eq!(s.display_name(), "1A2B3F");
+        s.name = "WINDMESSER1".into();
+        assert_eq!(s.display_name(), "WINDMESSER1");
+    }
+
+    #[test]
+    fn tag_owner_sees_base_and_gust_slots() {
+        let config = example_config(); // 25DF base, gust enabled → 25E0 occupied
+        assert_eq!(config.tag_owner(0x25DF).as_deref(), Some("WINDMESSER1"));
+        assert_eq!(config.tag_owner(0x25E0).as_deref(), Some("WINDMESSER1"));
+        assert!(config.tag_owner(0x1234).is_none());
     }
 
     #[test]
