@@ -404,7 +404,7 @@ fn prompt_sensor_fields(
         .prompt()?;
     let token = if skip.is_some()
         && !Confirm::new("Replace API token?")
-            .with_default(false)
+            .with_default(default.token.is_empty())
             .prompt()?
     {
         default.token.clone()

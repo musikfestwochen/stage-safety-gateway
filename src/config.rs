@@ -518,7 +518,7 @@ mod tests {
         assert_eq!(config.tag_owner(0x25DF, Some(0)), None);
         assert_eq!(config.tag_owner(0x25E0, Some(0)), None);
         // Other sensors' tags still collide.
-        // (example_config has only one sensor; add a second to check cross-collar.)
+        // (example_config has only one sensor; add a second to check cross-collision.)
         let mut config = example_config();
         let Sensor::BwWss(mut b) = config.sensors[0].clone();
         b.name = "SECOND".into();
