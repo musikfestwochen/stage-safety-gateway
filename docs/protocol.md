@@ -55,7 +55,7 @@ tag           25DF
 status        power-up + WSSx m/s flags
 data type     float32
 value         0.5597934 m/s
-RSSI          -50 dB
+RSSI          -50 dBm
 CV            104
 CRC           0xA65E, valid
 ```
@@ -145,7 +145,7 @@ With `FactoryGain=1.002911` and a 10-second gust period, every recorded gust val
 RSSI uses signed two's-complement with an offset of 45:
 
 ```python
-rssi_db = int.from_bytes(frame[12:13], signed=True) - 45
+rssi_dbm = int.from_bytes(frame[12:13], signed=True) - 45
 ```
 
 CV uses only the lower seven bits:
@@ -157,7 +157,7 @@ cv = frame[13] & 0x7F
 About 55 is poor and 110 is excellent. The documented operational LQI is:
 
 ```python
-lqi = ((94 + rssi_db + cv - 55) / 2) * 3.9
+lqi = ((94 + rssi_dbm + cv - 55) / 2) * 3.9
 ```
 
 RSSI and CV describe the radio reception at the base station. They are not sensor values and legitimately change between otherwise identical packets.
@@ -222,7 +222,7 @@ def decode_bw_wss(frame: bytes, unit: str) -> dict:
         "status": frame[6],
         "value": struct.unpack(">f", frame[8:12])[0],
         "unit": unit,
-        "rssi_db": int.from_bytes(frame[12:13], signed=True) - 45,
+        "rssi_dbm": int.from_bytes(frame[12:13], signed=True) - 45,
         "cv": frame[13] & 0x7F,
     }
 ```

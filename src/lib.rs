@@ -16,7 +16,7 @@ pub struct Frame {
     pub tag: u16,
     pub status: u8,
     pub value: f32,
-    pub rssi_db: i16,
+    pub rssi_dbm: i16,
     pub cv: u8,
     pub broadcast: bool,
     pub low_battery: bool,
@@ -70,7 +70,7 @@ pub fn decode(frame: &[u8]) -> Result<Frame, DecodeError> {
         tag: u16::from_be_bytes([frame[4], frame[5]]),
         status: frame[6],
         value: f32::from_be_bytes([frame[8], frame[9], frame[10], frame[11]]),
-        rssi_db: i16::from(frame[12] as i8) - 45,
+        rssi_dbm: i16::from(frame[12] as i8) - 45,
         cv: frame[13] & 0x7f,
         broadcast: frame[3] & 0x20 != 0,
         low_battery: frame[3] & 0x40 != 0 || frame[6] & 0x20 != 0,
@@ -140,7 +140,7 @@ impl fmt::Display for ReadingKind {
 
 /// One classified, timestamped reading ready for forwarding. The HTTP request
 /// payload (story #4) mirrors `kind`, `value`, `unit`, `window_seconds`,
-/// `battery_low`, `rssi_db`, `cv`; `observed_at` is the outer request field.
+/// `battery_low`, `rssi_dbm`, `cv`; `observed_at` is the outer request field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reading<'a> {
     pub sensor: &'a str,
@@ -150,7 +150,7 @@ pub struct Reading<'a> {
     pub unit: config::WindUnit,
     pub window_seconds: u64,
     pub battery_low: bool,
-    pub rssi_db: i16,
+    pub rssi_dbm: i16,
     pub cv: u8,
 }
 
@@ -158,7 +158,7 @@ impl fmt::Display for Reading<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{}  {}  {}  {:.4}  {}  win={}s  rssi={}dB  cv={}  bat={}",
+            "{}  {}  {}  {:.4}  {}  win={}s  rssi={}dBm  cv={}  low_bat={}",
             self.observed_at
                 .to_rfc3339_opts(SecondsFormat::Millis, true),
             self.sensor,
@@ -166,7 +166,7 @@ impl fmt::Display for Reading<'_> {
             self.value,
             self.unit,
             self.window_seconds,
-            self.rssi_db,
+            self.rssi_dbm,
             self.cv,
             self.battery_low,
         )
@@ -264,7 +264,7 @@ pub fn classify<'a>(
             ReadingKind::Gust => sensor.gust_window_secs,
         },
         battery_low: frame.low_battery,
-        rssi_db: frame.rssi_db,
+        rssi_dbm: frame.rssi_dbm,
         cv: frame.cv,
     })
 }
@@ -310,7 +310,7 @@ mod tests {
             tag,
             status: if low_battery { 0x3c } else { 0x1c },
             value: 1.5,
-            rssi_db: -50,
+            rssi_dbm: -50,
             cv: 100,
             broadcast: true,
             low_battery,
@@ -373,7 +373,7 @@ mod tests {
         assert!(line.contains("average"), "{line}");
         assert!(line.contains("  m/s  "), "{line}");
         assert!(line.contains("win=10s"), "{line}");
-        assert!(line.contains("bat=false"), "{line}");
+        assert!(line.contains("low_bat=false"), "{line}");
     }
 
     #[test]
