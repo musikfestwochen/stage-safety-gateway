@@ -45,7 +45,7 @@ No packet reported low battery, input integrity error, general error, shunt cali
 |---|---:|---:|
 | Average wind (`25DF`) | 0.3207388 m/s | 2.4767122 m/s |
 | Gust (`25E0`) | 0.3343068 m/s | 2.6744547 m/s |
-| RSSI | -77 dB | -64 dB |
+| RSSI | -77 dBm | -64 dBm |
 | CV | 79 | 108 |
 
 Every gust value is an integer multiple of:

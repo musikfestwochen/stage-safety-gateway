@@ -327,9 +327,13 @@ impl Config {
 
     /// Returns the owning sensor's display name if `tag` is already occupied by
     /// an existing sensor's base or gust slot. Used by the wizard to reject
-    /// colliding tags inline.
-    pub fn tag_owner(&self, tag: u16) -> Option<String> {
-        for sensor in &self.sensors {
+    /// colliding tags inline. Pass `skip` = the index of the sensor being
+    /// edited so its own tags don't count as a collision against itself.
+    pub fn tag_owner(&self, tag: u16, skip: Option<usize>) -> Option<String> {
+        for (i, sensor) in self.sensors.iter().enumerate() {
+            if Some(i) == skip {
+                continue;
+            }
             let Sensor::BwWss(s) = sensor;
             let mut tags = vec![s.data_tag];
             if s.gust {
@@ -496,9 +500,33 @@ mod tests {
     #[test]
     fn tag_owner_sees_base_and_gust_slots() {
         let config = example_config(); // 25DF base, gust enabled → 25E0 occupied
-        assert_eq!(config.tag_owner(0x25DF).as_deref(), Some("WINDMESSER1"));
-        assert_eq!(config.tag_owner(0x25E0).as_deref(), Some("WINDMESSER1"));
-        assert!(config.tag_owner(0x1234).is_none());
+        assert_eq!(
+            config.tag_owner(0x25DF, None).as_deref(),
+            Some("WINDMESSER1")
+        );
+        assert_eq!(
+            config.tag_owner(0x25E0, None).as_deref(),
+            Some("WINDMESSER1")
+        );
+        assert!(config.tag_owner(0x1234, None).is_none());
+    }
+
+    #[test]
+    fn tag_owner_skips_self_index() {
+        let config = example_config(); // sensor 0 owns 25DF + 25E0
+                                       // When editing sensor 0, its own tags must not count as collisions.
+        assert_eq!(config.tag_owner(0x25DF, Some(0)), None);
+        assert_eq!(config.tag_owner(0x25E0, Some(0)), None);
+        // Other sensors' tags still collide.
+        // (example_config has only one sensor; add a second to check cross-collar.)
+        let mut config = example_config();
+        let Sensor::BwWss(mut b) = config.sensors[0].clone();
+        b.name = "SECOND".into();
+        b.data_tag = 0x25E0;
+        b.gust = false;
+        config.sensors.push(Sensor::BwWss(b));
+        // 25E0 is now owned by sensor 1; editing sensor 0 must see the collision.
+        assert_eq!(config.tag_owner(0x25E0, Some(0)).as_deref(), Some("SECOND"));
     }
 
     #[test]

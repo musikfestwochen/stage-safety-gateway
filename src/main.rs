@@ -110,6 +110,7 @@ fn wizard(path: &Path) -> Result<()> {
                 "Serial settings",
                 "Aggregation policy",
                 "Add sensor",
+                "Edit sensor",
                 "Remove sensor",
                 "List sensors",
                 "Save and exit",
@@ -120,6 +121,7 @@ fn wizard(path: &Path) -> Result<()> {
             "Serial settings" => edit_serial(&mut config)?,
             "Aggregation policy" => edit_aggregation(&mut config)?,
             "Add sensor" => add_sensor(&mut config)?,
+            "Edit sensor" => edit_sensor(&mut config)?,
             "Remove sensor" => remove_sensor(&mut config)?,
             "List sensors" => list_sensors(&config)?,
             _ => match config.save(path) {
@@ -273,9 +275,61 @@ fn add_sensor(config: &mut Config) -> Result<()> {
         Some(Sensor::BwWss(last)) => last.url.clone(),
         None => DEFAULT_URL.to_string(),
     };
+    let blank = BwWssSensor {
+        name: String::new(),
+        id: String::new(),
+        unit: WindUnit::Mps,
+        data_tag: 0,
+        gust: false,
+        average_window_secs: 10,
+        gust_window_secs: 0,
+        url: def_url,
+        token: String::new(),
+    };
+    let sensor = prompt_sensor_fields(&blank, config, None)?;
+    config.sensors.push(Sensor::BwWss(sensor));
+    note("sensor added");
+    pause()
+}
 
-    let name = Text::new("Sensor name:").prompt()?;
+fn edit_sensor(config: &mut Config) -> Result<()> {
+    if config.sensors.is_empty() {
+        warn("no sensors configured");
+        return pause();
+    }
+    let pick = Select::new(
+        "Edit which sensor?",
+        config.sensors.iter().map(Sensor::details).collect(),
+    )
+    .prompt()?;
+    let index = config
+        .sensors
+        .iter()
+        .position(|s| s.details() == pick)
+        .context("selected sensor vanished")?;
+    let Sensor::BwWss(existing) = &config.sensors[index];
+    let existing = existing.clone();
+    let updated = prompt_sensor_fields(&existing, config, Some(index))?;
+    config.sensors[index] = Sensor::BwWss(updated);
+    note("sensor updated");
+    pause()
+}
+
+/// Prompts every `BwWssSensor` field, prefilled from `default`. On edit
+/// (`skip` = `Some(i)`) the token is reused unless the user explicitly asks to
+/// replace it; the token is never printed. On add (`skip` = `None`) a fresh
+/// token is required. The data-tag collision check ignores index `skip` so a
+/// sensor being edited doesn't collide with itself.
+fn prompt_sensor_fields(
+    default: &BwWssSensor,
+    config: &Config,
+    skip: Option<usize>,
+) -> Result<BwWssSensor> {
+    let name = Text::new("Sensor name:")
+        .with_default(&default.name)
+        .prompt()?;
     let id = Text::new("Hardware ID (6 hex chars):")
+        .with_default(&default.id)
         .with_validator(|input: &str| {
             Ok(
                 if input.len() == 6 && input.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -287,7 +341,9 @@ fn add_sensor(config: &mut Config) -> Result<()> {
         })
         .prompt()?;
     let data_tag = loop {
+        let tag_default = format!("{:04X}", default.data_tag);
         let input = Text::new("Base data tag (hex):")
+            .with_default(&tag_default)
             .with_validator(|input: &str| {
                 Ok(if u16::from_str_radix(input, 16).is_ok() {
                     Validation::Valid
@@ -297,24 +353,37 @@ fn add_sensor(config: &mut Config) -> Result<()> {
             })
             .prompt()?;
         let tag = u16::from_str_radix(&input, 16)?;
-        if let Some(owner) = config.tag_owner(tag) {
+        if let Some(owner) = config.tag_owner(tag, skip) {
             println!("tag {tag:04X} is already used by {owner}");
         } else {
             break tag;
         }
     };
-    let unit = Select::new("Unit:", WindUnit::ALL.to_vec()).prompt()?;
+    let unit = Select::new("Unit:", WindUnit::ALL.to_vec())
+        .with_starting_cursor(
+            WindUnit::ALL
+                .iter()
+                .position(|u| *u == default.unit)
+                .unwrap_or(0),
+        )
+        .prompt()?;
+    let avg_default = default.average_window_secs.to_string();
     let average_window_secs: u64 = Text::new("Average window (seconds):")
-        .with_default("10")
+        .with_default(&avg_default)
         .with_validator(min_value(1))
         .prompt()?
         .parse()?;
     let gust = Confirm::new("Gust measurement enabled?")
-        .with_default(false)
+        .with_default(default.gust)
         .prompt()?;
     let gust_window_secs: u64 = if gust {
+        let gust_default = if default.gust_window_secs == 0 {
+            "10".to_string()
+        } else {
+            default.gust_window_secs.to_string()
+        };
         Text::new("Gust window (seconds):")
-            .with_default("10")
+            .with_default(&gust_default)
             .with_validator(min_value(1))
             .prompt()?
             .parse()?
@@ -322,7 +391,7 @@ fn add_sensor(config: &mut Config) -> Result<()> {
         0
     };
     let url = Text::new("Musikfestapp URL:")
-        .with_default(&def_url)
+        .with_default(&default.url)
         .with_validator(|input: &str| {
             Ok(
                 if input.starts_with("http://") || input.starts_with("https://") {
@@ -333,19 +402,27 @@ fn add_sensor(config: &mut Config) -> Result<()> {
             )
         })
         .prompt()?;
-    let token = Password::new("API token:")
-        .with_display_mode(PasswordDisplayMode::Masked)
-        .without_confirmation()
-        .with_validator(|input: &str| {
-            Ok(if input.is_empty() {
-                Validation::Invalid("token must not be empty".into())
-            } else {
-                Validation::Valid
+    let token = if skip.is_some()
+        && !Confirm::new("Replace API token?")
+            .with_default(false)
+            .prompt()?
+    {
+        default.token.clone()
+    } else {
+        Password::new("API token:")
+            .with_display_mode(PasswordDisplayMode::Masked)
+            .without_confirmation()
+            .with_validator(|input: &str| {
+                Ok(if input.is_empty() {
+                    Validation::Invalid("token must not be empty".into())
+                } else {
+                    Validation::Valid
+                })
             })
-        })
-        .prompt()?;
+            .prompt()?
+    };
 
-    config.sensors.push(Sensor::BwWss(BwWssSensor {
+    Ok(BwWssSensor {
         name,
         id,
         unit,
@@ -355,9 +432,7 @@ fn add_sensor(config: &mut Config) -> Result<()> {
         gust_window_secs,
         url,
         token,
-    }));
-    note("sensor added");
-    pause()
+    })
 }
 
 fn list_sensors(config: &Config) -> Result<()> {
@@ -451,8 +526,8 @@ fn listen_once<R: Read>(input: &mut R, config: &Config) -> std::io::Result<()> {
         ReaderEvent::Unconfigured(frame) => {
             dropped += 1;
             eprintln!(
-                "[dropped: valid frame tag {:04X} value {:.4} rssi={}dB cv={}]  total dropped: {dropped}",
-                frame.tag, frame.value, frame.rssi_db, frame.cv
+                "[dropped: valid frame tag {:04X} value {:.4} rssi={}dBm cv={}]  total dropped: {dropped}",
+                frame.tag, frame.value, frame.rssi_dbm, frame.cv
             );
         }
         ReaderEvent::Eof => {

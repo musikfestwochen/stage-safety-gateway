@@ -36,7 +36,7 @@ Example:
 | 6 | `10` | Status | Bit 4 = power-up (power was applied rather than the device being radio-woken). The export independently reports `Status=16`. See the complete bit table below. |
 | 7 | `04` | Data type | Type 4 = four-byte IEEE-754 float. No display/unit flags are set. |
 | 8–11 | e.g. `3F EB 72 40` | Value, big-endian | `1.83942413`. The toolkit rounds this to `1.839424`. Values are already in the configured engineering unit (km/h). |
-| 12 | e.g. `E4` | RSSI | Signed int8 minus 45: `E4` = -28 - 45 = **-73 dB**. Capture range: -76 to -70 dB. |
+| 12 | e.g. `E4` | RSSI | Signed int8 minus 45: `E4` = -28 - 45 = **-73 dBm**. Capture range: -76 to -70 dBm. |
 | 13 | e.g. `E7` | CV | `E7 & 7F` = **103**. Capture range: 94–107; about 55 is poor and 110 is excellent. |
 | 14–15 | e.g. `25 DB` | CRC-16, little-endian | Modbus CRC-16 (`poly=A001`, init `FFFF`) over offsets 0–13. Stored value is `DB25`. |
 
@@ -104,7 +104,7 @@ The new constant packet bytes are:
 - Packet type `63` = Data Provider (`03`) + broadcast (`20`) + low battery (`40`). The error flag (`80`) remains clear.
 - Status `3C` = reserved bit 2 (`04`) + reserved bit 3 (`08`) + power-up (`10`) + battery low (`20`). The `20` meaning is proven independently by both the raised 3.3 V threshold and packet-type low-battery flag. Bits 2–3 cannot be attributed because several settings changed together; the applicable T24-PA manual calls them reserved.
 - The new gust values are integer multiples of `1.1176 / 1.002911 / 10 = 0.111435611 m/s`. This proves the gust period remains 10 s (`Settings=1`) while `SampleTime=5000` changed only the average window.
-- RSSI is stronger in capture 2 (-62 to -53 dB versus -76 to -70 dB) and CV is 103–108. These are reception conditions, not configuration fields.
+- RSSI is stronger in capture 2 (-62 to -53 dBm versus -76 to -70 dBm) and CV is 103–108. These are reception conditions, not configuration fields.
 
 `broadweigh_decoded_2.csv` contains the complete second decode.
 
