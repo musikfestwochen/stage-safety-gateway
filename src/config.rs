@@ -145,11 +145,17 @@ mod hex_tag {
 }
 
 impl Config {
-    pub fn load(path: &Path) -> Result<Self> {
+    /// Parses a config file without validating it. The wizard uses this to
+    /// open broken configs for repair; `load` is the strict variant.
+    pub fn read(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path)
             .with_context(|| format!("cannot read config file {}", path.display()))?;
-        let config: Config = toml::from_str(&text)
-            .with_context(|| format!("cannot parse config file {}", path.display()))?;
+        toml::from_str(&text)
+            .with_context(|| format!("cannot parse config file {}", path.display()))
+    }
+
+    pub fn load(path: &Path) -> Result<Self> {
+        let config = Self::read(path)?;
         config.validate()?;
         Ok(config)
     }
@@ -161,14 +167,25 @@ impl Config {
                 .with_context(|| format!("cannot create directory {}", parent.display()))?;
         }
         let text = toml::to_string_pretty(self).context("cannot serialize config")?;
-        fs::write(path, text)
-            .with_context(|| format!("cannot write config file {}", path.display()))?;
-        // Config contains API tokens.
+        // Config contains API tokens: create with 0600 from the start so the
+        // file is never group/world-readable, then tighten pre-existing files.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
+            use std::io::Write;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)
+                .and_then(|mut file| file.write_all(text.as_bytes()))
+                .with_context(|| format!("cannot write config file {}", path.display()))?;
             fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         }
+        #[cfg(not(unix))]
+        fs::write(path, text)
+            .with_context(|| format!("cannot write config file {}", path.display()))?;
         Ok(())
     }
 
@@ -195,7 +212,8 @@ impl Config {
             problems.push("at least one [[sensor]] is required".to_string());
         }
 
-        let mut tags = Vec::new();
+        // Tags occupied per sensor: base tag, plus base+1 when gust is enabled.
+        let mut occupied: Vec<(u16, &str)> = Vec::new();
         for sensor in &self.sensors {
             let Sensor::BwWss(s) = sensor;
             if s.id.len() != 6 || !s.id.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -216,19 +234,32 @@ impl Config {
                     s.name
                 ));
             }
-            if s.gust && s.gust_window_secs == 0 {
-                problems.push(format!(
-                    "sensor {:?}: gust_window_secs is required when gust is enabled",
-                    s.name
-                ));
+            let mut tags = vec![s.data_tag];
+            if s.gust {
+                if s.gust_window_secs == 0 {
+                    problems.push(format!(
+                        "sensor {:?}: gust_window_secs is required when gust is enabled",
+                        s.name
+                    ));
+                }
+                match s.data_tag.checked_add(1) {
+                    Some(gust_tag) => tags.push(gust_tag),
+                    None => problems.push(format!(
+                        "sensor {:?}: data_tag FFFF leaves no room for the gust tag",
+                        s.name
+                    )),
+                }
             }
-            if tags.contains(&s.data_tag) {
-                problems.push(format!(
-                    "sensor {:?}: data_tag {:04X} is used by another sensor",
-                    s.name, s.data_tag
-                ));
+            for tag in tags {
+                if let Some((_, owner)) = occupied.iter().find(|(t, _)| *t == tag) {
+                    problems.push(format!(
+                        "sensor {:?}: tag {tag:04X} collides with sensor {:?}",
+                        s.name, owner
+                    ));
+                } else {
+                    occupied.push((tag, s.name.as_str()));
+                }
             }
-            tags.push(s.data_tag);
         }
 
         if problems.is_empty() {
@@ -328,7 +359,7 @@ mod tests {
             "http(s)://",
             "token is empty",
             "gust_window_secs",
-            "another sensor",
+            "collides with sensor",
             "min_interval_secs must not exceed",
         ] {
             assert!(
@@ -336,6 +367,26 @@ mod tests {
                 "missing {expected:?} in {message}"
             );
         }
+    }
+
+    #[test]
+    fn gust_tag_collisions_are_rejected() {
+        // Sensor A (25DF, gust) occupies 25E0; sensor B may not use it as base.
+        let mut config = example_config();
+        let Sensor::BwWss(mut b) = config.sensors[0].clone();
+        b.name = "SECOND".into();
+        b.data_tag = 0x25E0;
+        b.gust = false;
+        config.sensors.push(Sensor::BwWss(b));
+        let message = config.validate().unwrap_err().to_string();
+        assert!(message.contains("25E0 collides"), "{message}");
+
+        // FFFF + gust leaves no room for base+1.
+        let mut config = example_config();
+        let Sensor::BwWss(s) = &mut config.sensors[0];
+        s.data_tag = 0xFFFF;
+        let message = config.validate().unwrap_err().to_string();
+        assert!(message.contains("no room for the gust tag"), "{message}");
     }
 
     #[test]

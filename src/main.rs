@@ -68,20 +68,22 @@ fn default_path() -> Result<PathBuf> {
 fn wizard(path: &Path) -> Result<()> {
     inquire::set_global_render_config(theme());
     let mut config = if path.exists() {
-        Config::load(path)?
-    } else {
-        Config {
-            serial: SerialConfig {
-                port: "/dev/ttyUSB0".into(),
-                baud_rate: 115200,
-            },
-            aggregation: AggregationConfig {
-                change_percent: 20.0,
-                min_interval_secs: 30,
-                max_interval_secs: 300,
-            },
-            sensors: Vec::new(),
+        match Config::read(path) {
+            Ok(config) => config,
+            Err(e) => {
+                warn(&format!("cannot load existing config:\n{e:#}"));
+                if Confirm::new("Start from defaults instead? (overwrites the file on save)")
+                    .with_default(false)
+                    .prompt()?
+                {
+                    default_config()
+                } else {
+                    return Err(e);
+                }
+            }
         }
+    } else {
+        default_config()
     };
 
     loop {
@@ -115,6 +117,21 @@ fn wizard(path: &Path) -> Result<()> {
                 }
             },
         }
+    }
+}
+
+fn default_config() -> Config {
+    Config {
+        serial: SerialConfig {
+            port: "/dev/ttyUSB0".into(),
+            baud_rate: 115200,
+        },
+        aggregation: AggregationConfig {
+            change_percent: 20.0,
+            min_interval_secs: 30,
+            max_interval_secs: 300,
+        },
+        sensors: Vec::new(),
     }
 }
 
