@@ -3,10 +3,20 @@ name = "stage-safety-gateway"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "Broadweigh wind-sensor gateway for Musikfestapp"
+description = "Stage-safety sensor gateway for Musikfestapp (Broadweigh/Mantracourt)"
 repository = "https://github.com/musikfestwochen/stage-safety-gateway"
 homepage = "https://github.com/musikfestwochen/stage-safety-gateway"
 readme = "README.md"
-keywords = ["broadweigh", "wind-sensor", "t24", "serial", "gateway"]
+keywords = ["broadweigh", "mantracourt", "t24", "serial", "gateway"]
 categories = ["command-line-utilities", "network-programming"]
 exclude = ["docs/", ".github/"]
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.4", features = ["derive"] }
+crossterm = "0.29"
+dirs = "6.0.0"
+inquire = "0.9.4"
+serde = { version = "1.0.229", features = ["derive"] }
+serialport = { version = "4.9", default-features = false }
+toml = "1.1.3"

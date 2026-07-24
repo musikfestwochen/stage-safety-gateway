@@ -1,8 +1,391 @@
-// ponytail: stub until `config`/`run` subcommands land (see repo epic); keeps crate installable.
-fn main() {
-    println!(
-        "stage-safety-gateway {} — BW-WSS → Musikfestapp bridge",
-        env!("CARGO_PKG_VERSION")
-    );
-    println!("not implemented yet; see https://github.com/musikfestwochen/stage-safety-gateway");
+use anyhow::{bail, Context, Result};
+use clap::{Parser, Subcommand};
+use crossterm::cursor::MoveTo;
+use crossterm::style::Stylize;
+use crossterm::terminal::{Clear, ClearType};
+use inquire::ui::{Color, RenderConfig, StyleSheet, Styled};
+use inquire::validator::Validation;
+use inquire::{Confirm, Password, PasswordDisplayMode, Select, Text};
+use stage_safety_gateway::config::{
+    AggregationConfig, BwWssSensor, Config, Sensor, SerialConfig, WindUnit, DEFAULT_URL,
+};
+use std::path::{Path, PathBuf};
+
+#[derive(Parser)]
+#[command(
+    version,
+    about = "Stage-safety sensor gateway for Musikfestapp (Broadweigh/Mantracourt)"
+)]
+struct Cli {
+    /// Config file path.
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Create or edit the configuration interactively.
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigAction>,
+    },
+    /// Start the gateway daemon (not implemented yet).
+    Run,
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Validate the configuration and print a redacted summary.
+    Validate,
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let path = match cli.config {
+        Some(path) => path,
+        None => default_path()?,
+    };
+    match cli.command {
+        Commands::Config { action: None } => wizard(&path),
+        Commands::Config {
+            action: Some(ConfigAction::Validate),
+        } => {
+            let config = Config::load(&path)?;
+            println!("{}\n\nconfig OK: {}", config.summary(), path.display());
+            Ok(())
+        }
+        Commands::Run => bail!("`run` is not implemented yet"),
+    }
+}
+
+fn default_path() -> Result<PathBuf> {
+    let dir = dirs::config_dir().context("cannot determine platform config dir; pass --config")?;
+    Ok(dir.join("stage-safety-gateway").join("config.toml"))
+}
+
+fn wizard(path: &Path) -> Result<()> {
+    inquire::set_global_render_config(theme());
+    let mut config = if path.exists() {
+        match Config::read(path) {
+            Ok(config) => config,
+            Err(e) => {
+                warn(&format!("cannot load existing config:\n{e:#}"));
+                if Confirm::new("Start from defaults instead? (overwrites the file on save)")
+                    .with_default(false)
+                    .prompt()?
+                {
+                    default_config()
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+    } else {
+        default_config()
+    };
+
+    loop {
+        crossterm::execute!(std::io::stdout(), Clear(ClearType::All), MoveTo(0, 0))?;
+        let action = Select::new(
+            &format!("Configuration ({})", path.display()),
+            vec![
+                "Serial settings",
+                "Aggregation policy",
+                "Add sensor",
+                "Remove sensor",
+                "List sensors",
+                "Save and exit",
+            ],
+        )
+        .prompt()?;
+        match action {
+            "Serial settings" => edit_serial(&mut config)?,
+            "Aggregation policy" => edit_aggregation(&mut config)?,
+            "Add sensor" => add_sensor(&mut config)?,
+            "Remove sensor" => remove_sensor(&mut config)?,
+            "List sensors" => list_sensors(&config)?,
+            _ => match config.save(path) {
+                Ok(()) => {
+                    note(&format!("saved to {}", path.display()));
+                    return Ok(());
+                }
+                Err(e) => {
+                    println!("\n{e:#}\n\nfix the problems above, then save again");
+                    pause()?;
+                }
+            },
+        }
+    }
+}
+
+fn default_config() -> Config {
+    Config {
+        serial: SerialConfig {
+            port: "/dev/ttyUSB0".into(),
+            baud_rate: 115200,
+        },
+        aggregation: AggregationConfig {
+            change_percent: 20.0,
+            min_interval_secs: 30,
+            max_interval_secs: 300,
+        },
+        sensors: Vec::new(),
+    }
+}
+
+fn theme() -> RenderConfig<'static> {
+    let mut config = RenderConfig::default_colored();
+    config.prompt_prefix = Styled::new("❯").with_fg(Color::LightCyan);
+    config.highlighted_option_prefix = Styled::new("→").with_fg(Color::LightCyan);
+    config.selected_option = Some(StyleSheet::new().with_fg(Color::LightCyan));
+    config.help_message = StyleSheet::new().with_fg(Color::DarkGrey);
+    config
+}
+
+/// Padded, colored status line that stays visible between prompts.
+fn note(message: &str) {
+    println!("\n  {} {message}\n", "✓".green());
+}
+
+fn warn(message: &str) {
+    println!("\n  {} {message}\n", "!".yellow());
+}
+
+/// Blocks output until acknowledged, so the menu redraw can't erase it unread.
+fn pause() -> Result<()> {
+    println!("  {}", "press any key to continue".dark_grey());
+    crossterm::terminal::enable_raw_mode()?;
+    let read = crossterm::event::read();
+    crossterm::terminal::disable_raw_mode()?;
+    read?;
+    Ok(())
+}
+
+fn edit_serial(config: &mut Config) -> Result<()> {
+    const MANUAL: &str = "Other (enter manually)";
+    let ports = serialport::available_ports().unwrap_or_default();
+    if ports.is_empty() {
+        warn("no serial ports detected; enter the path manually");
+        config.serial.port = Text::new("Serial port:")
+            .with_default(&config.serial.port)
+            .prompt()?;
+    } else {
+        let mut options: Vec<String> = ports.iter().map(port_label).collect();
+        options.push(MANUAL.into());
+        let cursor = ports
+            .iter()
+            .position(|p| p.port_name == config.serial.port)
+            .unwrap_or(options.len() - 1);
+        let pick = Select::new("Serial port:", options)
+            .with_starting_cursor(cursor)
+            .prompt()?;
+        config.serial.port = if pick == MANUAL {
+            Text::new("Serial port:")
+                .with_default(&config.serial.port)
+                .prompt()?
+        } else {
+            let index = ports
+                .iter()
+                .position(|p| port_label(p) == pick)
+                .unwrap_or(0);
+            ports[index].port_name.clone()
+        };
+    }
+
+    let baud_default = config.serial.baud_rate.to_string();
+    let baud = Text::new("Baud rate:")
+        .with_default(&baud_default)
+        .with_validator(positive_u32)
+        .prompt()?;
+    config.serial.baud_rate = baud.parse()?;
+    Ok(())
+}
+
+fn port_label(info: &serialport::SerialPortInfo) -> String {
+    let kind = match &info.port_type {
+        serialport::SerialPortType::UsbPort(usb) => usb.product.as_deref().unwrap_or("USB device"),
+        serialport::SerialPortType::PciPort => "PCI",
+        serialport::SerialPortType::BluetoothPort => "Bluetooth",
+        _ => "serial",
+    };
+    format!("{} ({})", info.port_name, kind)
+}
+
+fn edit_aggregation(config: &mut Config) -> Result<()> {
+    let percent_default = config.aggregation.change_percent.to_string();
+    let min_default = config.aggregation.min_interval_secs.to_string();
+    let max_default = config.aggregation.max_interval_secs.to_string();
+    let percent = Text::new("Send when a value changes by (%):")
+        .with_default(&percent_default)
+        .with_help_message(
+            "immediate send when a reading differs from the last sent value by this much; \
+             applies to average and gust independently; 20 is a good start",
+        )
+        .with_validator(|input: &str| {
+            Ok(match input.parse::<f64>() {
+                Ok(value) if value.is_finite() && value >= 0.0 => Validation::Valid,
+                _ => Validation::Invalid("enter a finite number >= 0".into()),
+            })
+        })
+        .prompt()?;
+    let min = Text::new("Minimum send interval (seconds):")
+        .with_default(&min_default)
+        .with_help_message("never send more often than this, even for large changes")
+        .with_validator(min_value(0))
+        .prompt()?;
+    let max = Text::new("Maximum send interval (seconds):")
+        .with_default(&max_default)
+        .with_help_message("always send at least this often, even when readings are stable")
+        .with_validator(min_value(1))
+        .prompt()?;
+    config.aggregation.change_percent = percent.parse()?;
+    config.aggregation.min_interval_secs = min.parse()?;
+    config.aggregation.max_interval_secs = max.parse()?;
+    if config.aggregation.min_interval_secs > config.aggregation.max_interval_secs {
+        warn("minimum interval exceeds maximum; config will not validate");
+        pause()?;
+    }
+    Ok(())
+}
+
+fn add_sensor(config: &mut Config) -> Result<()> {
+    println!("sensor type: bw-wss (only supported type for now)");
+
+    let def_url = match config.sensors.last() {
+        Some(Sensor::BwWss(last)) => last.url.clone(),
+        None => DEFAULT_URL.to_string(),
+    };
+
+    let name = Text::new("Sensor name:").prompt()?;
+    let id = Text::new("Hardware ID (6 hex chars):")
+        .with_validator(|input: &str| {
+            Ok(
+                if input.len() == 6 && input.chars().all(|c| c.is_ascii_hexdigit()) {
+                    Validation::Valid
+                } else {
+                    Validation::Invalid("6 hex characters, e.g. 1A2B3F".into())
+                },
+            )
+        })
+        .prompt()?;
+    let data_tag = loop {
+        let input = Text::new("Base data tag (hex):")
+            .with_validator(|input: &str| {
+                Ok(if u16::from_str_radix(input, 16).is_ok() {
+                    Validation::Valid
+                } else {
+                    Validation::Invalid("hex value between 0000 and FFFF".into())
+                })
+            })
+            .prompt()?;
+        let tag = u16::from_str_radix(&input, 16)?;
+        if let Some(owner) = config.tag_owner(tag) {
+            println!("tag {tag:04X} is already used by {owner}");
+        } else {
+            break tag;
+        }
+    };
+    let unit = Select::new("Unit:", WindUnit::ALL.to_vec()).prompt()?;
+    let average_window_secs: u64 = Text::new("Average window (seconds):")
+        .with_default("10")
+        .with_validator(min_value(1))
+        .prompt()?
+        .parse()?;
+    let gust = Confirm::new("Gust measurement enabled?")
+        .with_default(false)
+        .prompt()?;
+    let gust_window_secs: u64 = if gust {
+        Text::new("Gust window (seconds):")
+            .with_default("10")
+            .with_validator(min_value(1))
+            .prompt()?
+            .parse()?
+    } else {
+        0
+    };
+    let url = Text::new("Musikfestapp URL:")
+        .with_default(&def_url)
+        .with_validator(|input: &str| {
+            Ok(
+                if input.starts_with("http://") || input.starts_with("https://") {
+                    Validation::Valid
+                } else {
+                    Validation::Invalid("must start with http(s)://".into())
+                },
+            )
+        })
+        .prompt()?;
+    let token = Password::new("API token:")
+        .with_display_mode(PasswordDisplayMode::Masked)
+        .without_confirmation()
+        .with_validator(|input: &str| {
+            Ok(if input.is_empty() {
+                Validation::Invalid("token must not be empty".into())
+            } else {
+                Validation::Valid
+            })
+        })
+        .prompt()?;
+
+    config.sensors.push(Sensor::BwWss(BwWssSensor {
+        name,
+        id,
+        unit,
+        data_tag,
+        gust,
+        average_window_secs,
+        gust_window_secs,
+        url,
+        token,
+    }));
+    note("sensor added");
+    pause()
+}
+
+fn list_sensors(config: &Config) -> Result<()> {
+    if config.sensors.is_empty() {
+        warn("no sensors configured");
+        return pause();
+    }
+    println!();
+    for sensor in &config.sensors {
+        println!("  - {}", sensor.details());
+    }
+    println!();
+    pause()
+}
+
+fn remove_sensor(config: &mut Config) -> Result<()> {
+    if config.sensors.is_empty() {
+        warn("no sensors configured");
+        return pause();
+    }
+    let pick = Select::new(
+        "Remove which sensor?",
+        config.sensors.iter().map(Sensor::details).collect(),
+    )
+    .prompt()?;
+    if let Some(index) = config.sensors.iter().position(|s| s.details() == pick) {
+        config.sensors.remove(index);
+        note(&format!("removed {pick}"));
+    }
+    pause()
+}
+
+fn min_value(min: u64) -> impl Fn(&str) -> Result<Validation, inquire::CustomUserError> + Clone {
+    move |input: &str| {
+        Ok(match input.parse::<u64>() {
+            Ok(value) if value >= min => Validation::Valid,
+            _ => Validation::Invalid(format!("enter an integer >= {min}").into()),
+        })
+    }
+}
+
+fn positive_u32(input: &str) -> Result<Validation, inquire::CustomUserError> {
+    Ok(match input.parse::<u32>() {
+        Ok(value) if value > 0 => Validation::Valid,
+        _ => Validation::Invalid("enter a positive integer".into()),
+    })
 }
