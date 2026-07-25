@@ -345,6 +345,28 @@ pub enum ReaderEvent<'a> {
 pub fn run_reader<R: Read>(
     input: &mut R,
     config: &config::Config,
+    on_event: impl FnMut(ReaderEvent<'_>),
+) -> std::io::Result<()> {
+    run_reader_inner(input, config, || true, false, on_event)
+}
+
+/// Like [`run_reader`], but checks `keep_running` before reads and preserves a
+/// partial frame across serial timeouts. Returns `Ok(())` without an [`ReaderEvent::Eof`]
+/// event when cancellation is requested.
+pub fn run_reader_until<R: Read>(
+    input: &mut R,
+    config: &config::Config,
+    keep_running: impl FnMut() -> bool,
+    on_event: impl FnMut(ReaderEvent<'_>),
+) -> std::io::Result<()> {
+    run_reader_inner(input, config, keep_running, true, on_event)
+}
+
+fn run_reader_inner<R: Read>(
+    input: &mut R,
+    config: &config::Config,
+    mut keep_running: impl FnMut() -> bool,
+    continue_on_idle: bool,
     mut on_event: impl FnMut(ReaderEvent<'_>),
 ) -> std::io::Result<()> {
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
@@ -352,7 +374,21 @@ pub fn run_reader<R: Read>(
     let mut pending_drain = 0usize;
 
     loop {
-        let n = input.read(&mut chunk)?;
+        if !keep_running() {
+            return Ok(());
+        }
+        let n = match input.read(&mut chunk) {
+            Err(error)
+                if continue_on_idle
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted
+                    ) =>
+            {
+                continue;
+            }
+            result => result?,
+        };
         if n == 0 {
             if pending_drain > 0 {
                 on_event(ReaderEvent::Drained(pending_drain));
@@ -362,6 +398,9 @@ pub fn run_reader<R: Read>(
         }
         buf.extend_from_slice(&chunk[..n]);
         loop {
+            if !keep_running() {
+                return Ok(());
+            }
             let (opt, drain) = next_frame_with_drain(&mut buf);
             if drain > 0 {
                 pending_drain += drain;
@@ -842,6 +881,87 @@ mod tests {
             events,
             vec![Mk::Drained(2), Mk::Kind("average".into()), Mk::Eof,]
         );
+    }
+
+    #[test]
+    fn cancellable_reader_preserves_partial_frame_across_timeout() {
+        struct TimeoutSplit {
+            frame: [u8; FRAME_LEN],
+            read: usize,
+        }
+
+        impl Read for TimeoutSplit {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                self.read += 1;
+                match self.read {
+                    1 => {
+                        out[..8].copy_from_slice(&self.frame[..8]);
+                        Ok(8)
+                    }
+                    2 => Err(std::io::ErrorKind::TimedOut.into()),
+                    3 => {
+                        out[..8].copy_from_slice(&self.frame[8..]);
+                        Ok(8)
+                    }
+                    _ => Ok(0),
+                }
+            }
+        }
+
+        let config = config_with(vec![sensor("WIND", 0x25df, true)]);
+        let mut input = TimeoutSplit {
+            frame: [
+                0x0b, 0x0b, 0x01, 0x23, 0x25, 0xdf, 0x1c, 0x04, 0x3f, 0x0f, 0x4e, 0x9f, 0xfb, 0xe8,
+                0x5e, 0xa6,
+            ],
+            read: 0,
+        };
+        let mut readings = 0;
+
+        run_reader_until(
+            &mut input,
+            &config,
+            || true,
+            |event| {
+                if matches!(event, ReaderEvent::Reading(_)) {
+                    readings += 1;
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(readings, 1);
+    }
+
+    #[test]
+    fn cancellable_reader_stops_without_waiting_for_eof() {
+        let config = config_with(vec![sensor("WIND", 0x25df, true)]);
+        let frame = [
+            0x0b, 0x0b, 0x01, 0x23, 0x25, 0xdf, 0x1c, 0x04, 0x3f, 0x0f, 0x4e, 0x9f, 0xfb, 0xe8,
+            0x5e, 0xa6,
+        ];
+        let mut input = std::io::Cursor::new([frame, frame].concat());
+        let running = std::sync::atomic::AtomicBool::new(true);
+        let mut readings = 0;
+        let mut eof = false;
+
+        run_reader_until(
+            &mut input,
+            &config,
+            || running.load(std::sync::atomic::Ordering::SeqCst),
+            |event| match event {
+                ReaderEvent::Reading(_) => {
+                    readings += 1;
+                    running.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+                ReaderEvent::Eof => eof = true,
+                _ => {}
+            },
+        )
+        .unwrap();
+
+        assert_eq!(readings, 1);
+        assert!(!eof);
     }
 
     #[test]

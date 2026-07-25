@@ -5,6 +5,7 @@ use std::fmt;
 use std::time::Duration;
 
 use chrono::SecondsFormat;
+use log::debug;
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, RETRY_AFTER};
 use serde::{Deserialize, Serialize};
@@ -123,11 +124,13 @@ impl IngestionClient {
     }
 
     fn with_timeout(sensor: &BwWssSensor, timeout: Duration) -> Result<Self, reqwest::Error> {
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(timeout)
+            .build()?;
+        client.post(&sensor.url).build()?;
         Ok(Self {
-            client: Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(timeout)
-                .build()?,
+            client,
             url: sensor.url.clone(),
             token: sensor.token.clone(),
         })
@@ -135,6 +138,7 @@ impl IngestionClient {
 
     /// Performs one HTTP attempt. Retry timing and queue ownership belong to the daemon.
     pub fn send(&self, request: &IngestionRequest) -> TransportOutcome {
+        debug!("POST {} payload={request:?}", self.url);
         let response = match self
             .client
             .post(&self.url)
@@ -158,6 +162,7 @@ impl IngestionClient {
         };
 
         let status = response.status();
+        debug!("POST {} returned HTTP {status}", self.url);
         if status.is_success() {
             return TransportOutcome::Delivered;
         }
@@ -173,7 +178,7 @@ impl IngestionClient {
                 retry_after,
             };
         }
-        if status.is_server_error() {
+        if status.as_u16() == 408 || status.is_server_error() {
             return TransportOutcome::Retry {
                 reason: RetryReason::Server(status.as_u16()),
                 retry_after: None,
@@ -309,6 +314,14 @@ mod tests {
     fn classifies_retryable_and_permanent_responses() {
         for (status, retry_after, expected) in [
             (
+                408,
+                None,
+                TransportOutcome::Retry {
+                    reason: RetryReason::Server(408),
+                    retry_after: None,
+                },
+            ),
+            (
                 429,
                 Some("7"),
                 TransportOutcome::Retry {
@@ -423,17 +436,11 @@ mod tests {
     }
 
     #[test]
-    fn malformed_url_is_permanent_without_exposing_token() {
+    fn malformed_url_is_rejected_at_startup_without_exposing_token() {
         let sensor = sensor("http://[invalid", WindUnit::Mps);
-        let outcome = IngestionClient::new(&sensor)
-            .unwrap()
-            .send(&IngestionRequest::from(&reading(&sensor, 1.0)));
-        let formatted = format!("{outcome:?}");
+        let error = IngestionClient::new(&sensor).unwrap_err();
+        let formatted = error.to_string();
 
-        assert!(matches!(
-            outcome,
-            TransportOutcome::Permanent(PermanentFailure::InvalidRequest(_))
-        ));
         assert!(!formatted.contains("top-secret"));
     }
 }

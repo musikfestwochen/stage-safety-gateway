@@ -9,9 +9,8 @@ Gateway between stage-safety sensors (Broadweigh / Mantracourt) and the
 [Musikfestapp](https://github.com/musikfestwochen/musikfestapp) Stage Safety API.
 Currently supports the BW-WSS wind sensor via a T24 base station.
 
-The repository contains the verified T24 value-frame decoder. The gateway is
-under active development; not all components documented below are implemented
-yet.
+The gateway decodes T24 serial frames, applies its configured send policy, and
+forwards normalized readings to the Musikfestapp Stage Safety API.
 
 ## Installation
 
@@ -25,12 +24,30 @@ cargo install stage-safety-gateway
 stage-safety-gateway config           # interactive setup wizard
 stage-safety-gateway config validate  # check config, print redacted summary
 stage-safety-gateway listen           # decode serial (or --stdin) and print readings
-stage-safety-gateway run              # start the gateway (not implemented yet)
+stage-safety-gateway run              # run the serial-to-HTTP gateway
+stage-safety-gateway run --verbose    # also log readings and HTTP attempts
 ```
 
 Config lives in the platform config dir (Linux: `~/.config/stage-safety-gateway/config.toml`);
 override with `--config <path>`. One TOML file holds serial settings, the
 aggregation policy, and any number of type-tagged `[[sensor]]` entries.
+
+`run` stays in the foreground and handles SIGINT/SIGTERM for service-manager
+use. It retries temporary HTTP failures and serial disconnects. Set `RUST_LOG`
+to override log filtering, for example:
+
+```sh
+RUST_LOG=stage_safety_gateway=debug,reqwest=warn stage-safety-gateway run
+```
+
+The capture fixture contains hexadecimal text, not raw serial bytes. Convert it
+before replaying it through a virtual serial pair:
+
+```sh
+xxd -r -p tests/fixtures/bw-wss-mps.hex > /tmp/bw-wss.raw
+socat -d -d pty,raw,echo=0 pty,raw,echo=0
+# Configure one printed PTY as serial.port, then write /tmp/bw-wss.raw to the other.
+```
 
 ## Documentation
 
