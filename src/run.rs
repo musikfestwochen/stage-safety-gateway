@@ -212,9 +212,11 @@ fn finished_worker(reader: &JoinHandle<()>, workers: &[SenderWorker]) -> Option<
 }
 
 fn open_serial(config: &Config) -> serialport::Result<Box<dyn serialport::SerialPort>> {
-    serialport::new(&config.serial.port, config.serial.baud_rate)
-        .timeout(SERIAL_TIMEOUT)
-        .open()
+    let builder =
+        serialport::new(&config.serial.port, config.serial.baud_rate).timeout(SERIAL_TIMEOUT);
+    #[cfg(unix)]
+    let builder = builder.exclusive(true);
+    builder.open()
 }
 
 fn reader_loop(
