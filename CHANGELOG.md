@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0](https://github.com/musikfestwochen/stage-safety-gateway/compare/v0.1.3...v1.0.0) - 2026-07-25
+
+### Added
+
+- add gateway run daemon
+- add aggregated send policy
+- add stage safety HTTP client
+- edit sensor wizard, rssi_dbm unit, low_bat label
+
+### Fixed
+
+- redact URLs from HTTP errors
+- harden gateway runtime safeguards
+- edit-sensor token default + test comment typo
+
+### Other
+
+- add release readiness guides
+- verify high-frequency aggregation
+
 ## [0.1.3](https://github.com/musikfestwochen/stage-safety-gateway/compare/v0.1.2...v0.1.3) - 2026-07-24
 
 ### Fixed
