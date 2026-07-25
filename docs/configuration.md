@@ -32,7 +32,7 @@ data_tag = "25DF"
 gust = true
 average_window_secs = 10
 gust_window_secs = 10
-url = "https://musikfestapp.ch/stage-safety/readings"
+url = "https://musikfestapp.ch/api/stage-safety/readings"
 token = "replace-with-api-token"
 ```
 
