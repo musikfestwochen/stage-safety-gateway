@@ -82,7 +82,7 @@ impl std::fmt::Debug for BwWssSensor {
 }
 
 /// Default Musikfestapp ingestion endpoint, prefilled in the wizard.
-pub const DEFAULT_URL: &str = "https://musikfestapp.ch/stage-safety/readings";
+pub const DEFAULT_URL: &str = "https://musikfestapp.ch/api/stage-safety/readings";
 
 impl BwWssSensor {
     /// Identifies a sensor in messages: the configured name, or the hardware
@@ -379,6 +379,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_url_matches_api_contract() {
+        assert_eq!(
+            DEFAULT_URL,
+            "https://musikfestapp.ch/api/stage-safety/readings"
+        );
+    }
 
     fn example_config() -> Config {
         Config {
