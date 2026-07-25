@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0](https://github.com/musikfestwochen/stage-safety-gateway/compare/v0.1.3...v0.2.0) - 2026-07-25
+## [1.0.0](https://github.com/musikfestwochen/stage-safety-gateway/compare/v0.1.3...v1.0.0) - 2026-07-25
 
 ### Added
 
