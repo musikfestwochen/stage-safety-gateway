@@ -67,8 +67,8 @@ fn run_reader_decodes_fixture_with_tag_split() {
     let mut counts = Counts::default();
     run_reader(&mut cursor, &config(), |event| match event {
         ReaderEvent::Reading(r) => match r.kind {
-            ReadingKind::Average => counts.average += 1,
-            ReadingKind::Gust => counts.gust += 1,
+            ReadingKind::WindAverage => counts.average += 1,
+            ReadingKind::WindGust => counts.gust += 1,
         },
         ReaderEvent::Unconfigured(_) => counts.unconfigured += 1,
         ReaderEvent::Drained(n) => counts.drained_total += n,

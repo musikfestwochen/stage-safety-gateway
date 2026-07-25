@@ -43,7 +43,7 @@ pub enum Sensor {
     BwWss(BwWssSensor),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BwWssSensor {
     /// Free-form label (toolkit `Name`), used in logs and prompts.
@@ -63,6 +63,22 @@ pub struct BwWssSensor {
     pub gust_window_secs: u64,
     pub url: String,
     pub token: String,
+}
+
+impl std::fmt::Debug for BwWssSensor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BwWssSensor")
+            .field("name", &self.name)
+            .field("id", &self.id)
+            .field("unit", &self.unit)
+            .field("data_tag", &format_args!("{:04X}", self.data_tag))
+            .field("gust", &self.gust)
+            .field("average_window_secs", &self.average_window_secs)
+            .field("gust_window_secs", &self.gust_window_secs)
+            .field("url", &self.url)
+            .field("token", &"********")
+            .finish()
+    }
 }
 
 /// Default Musikfestapp ingestion endpoint, prefilled in the wizard.
@@ -144,6 +160,17 @@ impl WindUnit {
             WindUnit::Mph => "mph",
             WindUnit::Fps => "fps",
             WindUnit::Kn => "kn",
+        }
+    }
+
+    /// Converts a configured source-unit value to canonical metres per second.
+    pub fn to_mps(self, value: f32) -> f32 {
+        match self {
+            WindUnit::Mps => value,
+            WindUnit::Kmh => value / 3.6,
+            WindUnit::Mph => value * 0.44704,
+            WindUnit::Fps => value * 0.3048,
+            WindUnit::Kn => value * 0.514444,
         }
     }
 }
@@ -309,17 +336,17 @@ impl Config {
     }
 
     /// Resolves a received `tag` against configured sensors. Returns the owning
-    /// `BwWssSensor` and the inferred reading kind: `data_tag` → `Average`,
-    /// `data_tag + 1` (gust enabled) → `Gust`. Search stops at the first match;
+    /// `BwWssSensor` and the inferred reading kind: `data_tag` → `WindAverage`,
+    /// `data_tag + 1` (gust enabled) → `WindGust`. Search stops at the first match;
     /// [`Config::validate`] rejects colliding tags so ownership is unique.
     pub fn match_tag(&self, tag: u16) -> Option<(&BwWssSensor, ReadingKind)> {
         for sensor in &self.sensors {
             let Sensor::BwWss(s) = sensor;
             if s.data_tag == tag {
-                return Some((s, ReadingKind::Average));
+                return Some((s, ReadingKind::WindAverage));
             }
             if s.gust && s.data_tag.checked_add(1) == Some(tag) {
-                return Some((s, ReadingKind::Gust));
+                return Some((s, ReadingKind::WindGust));
             }
         }
         None
@@ -537,13 +564,20 @@ mod tests {
     }
 
     #[test]
+    fn debug_never_contains_token() {
+        let debug = format!("{:?}", example_config());
+        assert!(debug.contains("********"), "{debug}");
+        assert!(!debug.contains("secret"), "{debug}");
+    }
+
+    #[test]
     fn match_tag_resolves_base_and_gust() {
         let config = example_config();
         let (s, kind) = config.match_tag(0x25DF).unwrap();
         assert_eq!(s.display_name(), "WINDMESSER1");
-        assert_eq!(kind, ReadingKind::Average);
+        assert_eq!(kind, ReadingKind::WindAverage);
         let (_, kind) = config.match_tag(0x25E0).unwrap();
-        assert_eq!(kind, ReadingKind::Gust);
+        assert_eq!(kind, ReadingKind::WindGust);
         assert!(config.match_tag(0x1234).is_none());
     }
 
