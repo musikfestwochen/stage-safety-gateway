@@ -4,8 +4,10 @@ use std::fmt;
 use std::io::Read;
 
 use chrono::{DateTime, SecondsFormat, Utc};
+use serde::Serialize;
 
 pub mod config;
+pub mod http;
 
 pub const FRAME_LEN: usize = 16;
 
@@ -123,27 +125,27 @@ pub fn next_frame_with_drain(buffer: &mut Vec<u8>) -> (Option<Frame>, usize) {
 
 /// Reading kind produced by classifying a decoded [`Frame`] against the
 /// configured `data_tag` (average) and `data_tag + 1` (gust, when enabled).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReadingKind {
-    Average,
-    Gust,
+    WindAverage,
+    WindGust,
 }
 
 impl fmt::Display for ReadingKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            ReadingKind::Average => "average",
-            ReadingKind::Gust => "gust",
+            ReadingKind::WindAverage => "average",
+            ReadingKind::WindGust => "gust",
         })
     }
 }
 
-/// One classified, timestamped reading ready for forwarding. The HTTP request
-/// payload (story #4) mirrors `kind`, `value`, `unit`, `window_seconds`,
-/// `battery_low`, `rssi_dbm`, `cv`; `observed_at` is the outer request field.
+/// One classified, timestamped reading ready for forwarding. `sensor` retains
+/// stable ownership for routing; display names are not required to be unique.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reading<'a> {
-    pub sensor: &'a str,
+    pub sensor: &'a config::BwWssSensor,
     pub kind: ReadingKind,
     pub observed_at: DateTime<Utc>,
     pub value: f32,
@@ -161,7 +163,7 @@ impl fmt::Display for Reading<'_> {
             "{}  {}  {}  {:.4}  {}  win={}s  rssi={}dBm  cv={}  low_bat={}",
             self.observed_at
                 .to_rfc3339_opts(SecondsFormat::Millis, true),
-            self.sensor,
+            self.sensor.display_name(),
             self.kind,
             self.value,
             self.unit,
@@ -244,7 +246,7 @@ fn flush_drain(pending: &mut usize, on_event: &mut impl FnMut(ReaderEvent<'_>)) 
 }
 
 /// Stamps `frame` with `observed_at` if it matches a configured sensor's base
-/// tag (→ `Average`) or, when gust is enabled, `data_tag + 1` (→ `Gust`).
+/// tag (→ `WindAverage`) or, when gust is enabled, `data_tag + 1` (→ `WindGust`).
 /// Otherwise returns `None`. Pure: trivially unit-testable, identical mapping
 /// used by the daemon reader thread later.
 pub fn classify<'a>(
@@ -254,14 +256,14 @@ pub fn classify<'a>(
 ) -> Option<Reading<'a>> {
     let (sensor, kind) = config.match_tag(frame.tag)?;
     Some(Reading {
-        sensor: sensor.display_name(),
+        sensor,
         kind,
         observed_at,
         value: frame.value,
         unit: sensor.unit,
         window_seconds: match kind {
-            ReadingKind::Average => sensor.average_window_secs,
-            ReadingKind::Gust => sensor.gust_window_secs,
+            ReadingKind::WindAverage => sensor.average_window_secs,
+            ReadingKind::WindGust => sensor.gust_window_secs,
         },
         battery_low: frame.low_battery,
         rssi_dbm: frame.rssi_dbm,
@@ -323,8 +325,8 @@ mod tests {
         let config = config_with(vec![sensor("WIND", 0x25df, true)]);
         let now = Utc::now();
         let reading = classify(&frame(0x25df, false), &config, now).unwrap();
-        assert_eq!(reading.sensor, "WIND");
-        assert_eq!(reading.kind, ReadingKind::Average);
+        assert_eq!(reading.sensor.display_name(), "WIND");
+        assert_eq!(reading.kind, ReadingKind::WindAverage);
         assert_eq!(reading.window_seconds, 10);
         assert_eq!(reading.unit, WindUnit::Mps);
         assert!(!reading.battery_low);
@@ -335,7 +337,7 @@ mod tests {
     fn classify_maps_gust_tag_only_when_enabled() {
         let enabled = config_with(vec![sensor("WIND", 0x25df, true)]);
         let reading = classify(&frame(0x25e0, false), &enabled, Utc::now()).unwrap();
-        assert_eq!(reading.kind, ReadingKind::Gust);
+        assert_eq!(reading.kind, ReadingKind::WindGust);
         assert_eq!(reading.window_seconds, 10);
 
         let disabled = config_with(vec![sensor("WIND", 0x25df, false)]);
@@ -350,6 +352,18 @@ mod tests {
     fn classify_drops_unconfigured_tag() {
         let config = config_with(vec![sensor("WIND", 0x25df, true)]);
         assert_eq!(classify(&frame(0x3000, false), &config, Utc::now()), None);
+    }
+
+    #[test]
+    fn classify_retains_owner_when_display_names_match() {
+        let config = config_with(vec![
+            sensor("WIND", 0x25df, false),
+            sensor("WIND", 0x3000, false),
+        ]);
+        let reading = classify(&frame(0x3000, false), &config, Utc::now()).unwrap();
+
+        assert_eq!(reading.sensor.display_name(), "WIND");
+        assert_eq!(reading.sensor.data_tag, 0x3000);
     }
 
     #[test]
