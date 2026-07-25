@@ -45,10 +45,7 @@ impl From<&Reading<'_>> for IngestionRequest {
                 kind: reading.kind,
                 value: reading.sensor.unit.to_mps(reading.value),
                 unit: "m/s",
-                window_seconds: match reading.kind {
-                    ReadingKind::WindAverage => reading.sensor.average_window_secs,
-                    ReadingKind::WindGust => reading.sensor.gust_window_secs,
-                },
+                window_seconds: reading.window_seconds,
                 battery_low: reading.battery_low,
                 rssi_dbm: reading.rssi_dbm,
                 cv: reading.cv,
@@ -289,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn request_uses_owning_sensor_unit_and_window() {
+    fn request_uses_owning_sensor_unit_and_aggregated_window() {
         let sensor = sensor("https://example.test", WindUnit::Kmh);
         let mut reading = reading(&sensor, 36.0);
         reading.kind = ReadingKind::WindAverage;
@@ -299,7 +296,7 @@ mod tests {
         let request = IngestionRequest::from(&reading);
 
         assert_eq!(request.payload.value, 10.0);
-        assert_eq!(request.payload.window_seconds, 10);
+        assert_eq!(request.payload.window_seconds, 999);
         assert_eq!(request.sensor_identifier, "1A2B3F");
         assert_eq!(request.observed_at, "2026-07-23T12:00:00Z");
         assert_eq!(

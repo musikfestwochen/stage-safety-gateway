@@ -250,7 +250,7 @@ fn edit_aggregation(config: &mut Config) -> Result<()> {
         .prompt()?;
     let min = Text::new("Minimum send interval (seconds):")
         .with_default(&min_default)
-        .with_help_message("never send more often than this, even for large changes")
+        .with_help_message("rate limit for value changes; battery changes still send immediately")
         .with_validator(min_value(0))
         .prompt()?;
     let max = Text::new("Maximum send interval (seconds):")
