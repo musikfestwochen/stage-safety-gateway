@@ -710,11 +710,10 @@ mod tests {
     }
 
     #[test]
-    fn policy_state_stays_fixed_through_high_frequency_window() {
+    fn policy_handles_high_frequency_window() {
         let sensor = sensor("WIND", 0x25df, true);
         let config = policy(100.0, 0, 1_800);
         let mut state = PolicyState::new();
-        let bytes = std::mem::size_of_val(&state);
 
         state
             .observe(
@@ -730,7 +729,15 @@ mod tests {
                 )
                 .is_none());
         }
-        assert_eq!(std::mem::size_of_val(&state), bytes);
+
+        let heartbeat = state
+            .observe(
+                policy_reading(&sensor, ReadingKind::WindAverage, 1_800_000, 1.0),
+                &config,
+            )
+            .unwrap();
+        assert_eq!(heartbeat.value, 1.0);
+        assert_eq!(heartbeat.window_seconds, 1_800);
     }
 
     #[test]
