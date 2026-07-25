@@ -9,7 +9,7 @@ homepage = "https://github.com/musikfestwochen/stage-safety-gateway"
 readme = "README.md"
 keywords = ["broadweigh", "mantracourt", "t24", "serial", "gateway"]
 categories = ["command-line-utilities", "network-programming"]
-exclude = ["docs/", ".github/"]
+exclude = ["art/", "docs/", ".github/"]
 
 [dependencies]
 anyhow = "1.0.104"

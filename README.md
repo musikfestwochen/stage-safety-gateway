@@ -1,55 +1,56 @@
-# Stage Safety Gateway
+<p align="center">
+  <img src="https://raw.githubusercontent.com/musikfestwochen/stage-safety-gateway/main/art/logo.png" alt="Stage Safety Gateway" width="860">
+</p>
 
-[![Crates.io](https://img.shields.io/crates/v/stage-safety-gateway)](https://crates.io/crates/stage-safety-gateway)
-[![docs.rs](https://img.shields.io/docsrs/stage-safety-gateway)](https://docs.rs/stage-safety-gateway)
-[![License](https://img.shields.io/crates/l/stage-safety-gateway)](LICENSE)
-[![Status](https://img.shields.io/badge/status-in%20development-orange)](#)
+<p align="center">
+  <strong>Reliable serial-to-HTTP bridge for stage-safety sensors.</strong><br>
+  Broadweigh / Mantracourt T24 frames in, canonical Musikfestapp readings out.
+</p>
 
-Gateway between stage-safety sensors (Broadweigh / Mantracourt) and the
-[Musikfestapp](https://github.com/musikfestwochen/musikfestapp) Stage Safety API.
-Currently supports the BW-WSS wind sensor via a T24 base station.
+<p align="center">
+  <a href="https://crates.io/crates/stage-safety-gateway"><img src="https://img.shields.io/crates/v/stage-safety-gateway?style=flat-square" alt="Crates.io"></a>
+  <a href="https://docs.rs/stage-safety-gateway"><img src="https://img.shields.io/docsrs/stage-safety-gateway?style=flat-square" alt="docs.rs"></a>
+  <a href="https://github.com/musikfestwochen/stage-safety-gateway/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/musikfestwochen/stage-safety-gateway/ci.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
+  <a href="https://github.com/musikfestwochen/stage-safety-gateway/blob/main/LICENSE"><img src="https://img.shields.io/crates/l/stage-safety-gateway?style=flat-square" alt="License"></a>
+</p>
 
-The gateway decodes T24 serial frames, applies its configured send policy, and
-forwards normalized readings to the Musikfestapp Stage Safety API.
+Stage Safety Gateway decodes verified T24 serial frames, filters configured
+sensors, applies an independent average/gust send policy, and forwards readings
+to the [Musikfestapp](https://github.com/musikfestwochen/musikfestapp) Stage
+Safety API. Currently supports the BW-WSS wind sensor through a T24 base station.
 
-## Installation
+## Quick Start
 
 Install a current stable [Rust toolchain](https://rustup.rs/), then:
 
 ```sh
 cargo install stage-safety-gateway
-stage-safety-gateway --version
-```
-
-On Linux, the service user must be allowed to open the serial device. This
-commonly means membership in the `dialout` group; exact group depends on the
-distribution and device permissions.
-
-## Usage
-
-```sh
-stage-safety-gateway config           # interactive setup wizard
-stage-safety-gateway config validate  # check config, print redacted summary
-stage-safety-gateway listen           # decode serial (or --stdin) and print readings
-stage-safety-gateway run              # run the serial-to-HTTP gateway
-stage-safety-gateway run --verbose    # also log readings and HTTP attempts
-```
-
-`--config <path>` selects a non-default config file and works with every
-command. `listen` is diagnostic only and makes no HTTP requests. `run` stays in
-the foreground for service-manager use.
-
-## Quick Start
-
-Create config with the wizard, verify it, then start gateway:
-
-```sh
 stage-safety-gateway config
 stage-safety-gateway config validate
 stage-safety-gateway run
 ```
 
-Equivalent minimal config:
+On Linux, service user needs access to serial device, commonly through
+`dialout` group. Use global `--config <path>` option to select non-default
+config file.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `stage-safety-gateway config` | Create or edit config interactively. |
+| `stage-safety-gateway config validate` | Validate config and print redacted summary. |
+| `stage-safety-gateway listen` | Decode configured serial readings without HTTP. |
+| `stage-safety-gateway listen --stdin` | Decode raw binary input from stdin. |
+| `stage-safety-gateway run` | Run foreground serial-to-HTTP gateway. |
+| `stage-safety-gateway run --verbose` | Also log readings, policy decisions, and HTTP attempts. |
+
+## Configuration
+
+Wizard is recommended. Minimal equivalent TOML:
+
+<details>
+<summary>Show example</summary>
 
 ```toml
 [serial]
@@ -74,34 +75,31 @@ url = "https://musikfestapp.ch/stage-safety/readings"
 token = "replace-with-api-token"
 ```
 
-Full config constraints and operational behavior live in documentation below.
+</details>
 
 ## Documentation
 
-- [Configuration reference](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/configuration.md)
-- [Operations guide](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/operations.md)
-- [Protocol specification](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/protocol.md)
-- [Reverse-engineering evidence](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/reverse-engineering.md)
-- [Final capture report](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/final-capture.md)
-- [Final tested sensor configuration](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/reference/BW-WSS-FD25D5-final.tcf)
+| Guide | Contents |
+| --- | --- |
+| [Configuration reference](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/configuration.md) | Every TOML key, default, and constraint. |
+| [Operations guide](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/operations.md) | Reliability, logging, systemd, security, and fixture replay. |
+| [Protocol specification](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/protocol.md) | Verified T24 frame format and decoder rules. |
+| [Reverse-engineering evidence](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/reverse-engineering.md) | Captures and evidence behind protocol. |
+| [Final capture report](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/final-capture.md) | Validated BW-WSS recording. |
+| [Sensor reference config](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/reference/BW-WSS-FD25D5-final.tcf) | Final tested toolkit configuration. |
 
 ## Development
 
 ```sh
-cargo fmt --all
+cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 cargo publish --dry-run --allow-dirty
 ```
 
-The integration test in [`tests/`](tests) decodes
-[`tests/fixtures/bw-wss-mps.hex`](tests/fixtures/bw-wss-mps.hex), a real
-316-frame m/s recording stored as contiguous hexadecimal bytes, through the
-public API.
+Captured-frame integration tests replay a real 316-frame recording. Decoder
+accepts arbitrary byte streams, resynchronizes after noise, validates Modbus
+CRC-16, and exposes only valid BW-WSS float Data Provider frames.
 
-The decoder accepts an arbitrary byte stream, resynchronizes after noise or
-invalid frames, validates Modbus CRC-16, and returns only valid BW-WSS float
-Data Provider frames.
-
-This software is monitoring and advisory software, not fail-safe safety
-control.
+> **Safety:** Monitoring and advisory software only. Not fail-safe safety
+> control.
