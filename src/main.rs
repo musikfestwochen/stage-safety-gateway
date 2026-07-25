@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use crossterm::cursor::MoveTo;
 use crossterm::style::Stylize;
@@ -13,6 +13,8 @@ use stage_safety_gateway::{run_reader, ReaderEvent};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+mod run;
 
 #[derive(Parser)]
 #[command(
@@ -34,8 +36,12 @@ enum Commands {
         #[command(subcommand)]
         action: Option<ConfigAction>,
     },
-    /// Start the gateway daemon (not implemented yet).
-    Run,
+    /// Start the gateway.
+    Run {
+        /// Print received measurements, policy decisions, and HTTP attempts.
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Decode serial input (or stdin) and print parsed readings.
     /// Diagnostic mode: no network, no daemon. Resync noise and dropped
     /// unconfigured frames surface as `[…]` lines between readings.
@@ -68,7 +74,19 @@ fn main() -> Result<()> {
             println!("{}\n\nconfig OK: {}", config.summary(), path.display());
             Ok(())
         }
-        Commands::Run => bail!("`run` is not implemented yet"),
+        Commands::Run { verbose } => {
+            let default_filter = if verbose {
+                "stage_safety_gateway=debug"
+            } else {
+                "stage_safety_gateway=info"
+            };
+            env_logger::Builder::from_env(
+                env_logger::Env::default().default_filter_or(default_filter),
+            )
+            .init();
+            let config = Config::load(&path)?;
+            run::run(config, &path)
+        }
         Commands::Listen { stdin } => {
             let config = Config::load(&path)?;
             listen(&config, stdin)

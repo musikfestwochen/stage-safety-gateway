@@ -5,6 +5,7 @@ use std::fmt;
 use std::time::Duration;
 
 use chrono::SecondsFormat;
+use log::debug;
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT, RETRY_AFTER};
 use serde::{Deserialize, Serialize};
@@ -99,6 +100,7 @@ pub enum TransportOutcome {
 pub struct IngestionClient {
     client: Client,
     url: String,
+    log_url: String,
     token: String,
 }
 
@@ -111,7 +113,7 @@ struct ValidationErrorResponse {
 impl fmt::Debug for IngestionClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("IngestionClient")
-            .field("url", &self.url)
+            .field("url", &self.log_url)
             .field("token", &"********")
             .finish_non_exhaustive()
     }
@@ -123,18 +125,31 @@ impl IngestionClient {
     }
 
     fn with_timeout(sensor: &BwWssSensor, timeout: Duration) -> Result<Self, reqwest::Error> {
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(timeout)
+            .build()?;
+        let request = client.post(&sensor.url).build()?;
+        let mut log_url = request.url().clone();
+        log_url
+            .set_password(None)
+            .expect("HTTP URLs support password removal");
+        log_url
+            .set_username("")
+            .expect("HTTP URLs support username removal");
+        log_url.set_query(None);
+        log_url.set_fragment(None);
         Ok(Self {
-            client: Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(timeout)
-                .build()?,
+            client,
             url: sensor.url.clone(),
+            log_url: log_url.to_string(),
             token: sensor.token.clone(),
         })
     }
 
     /// Performs one HTTP attempt. Retry timing and queue ownership belong to the daemon.
     pub fn send(&self, request: &IngestionRequest) -> TransportOutcome {
+        debug!("POST {} payload={request:?}", self.log_url);
         let response = match self
             .client
             .post(&self.url)
@@ -158,6 +173,7 @@ impl IngestionClient {
         };
 
         let status = response.status();
+        debug!("POST {} returned HTTP {status}", self.log_url);
         if status.is_success() {
             return TransportOutcome::Delivered;
         }
@@ -173,7 +189,7 @@ impl IngestionClient {
                 retry_after,
             };
         }
-        if status.is_server_error() {
+        if status.as_u16() == 408 || status.is_server_error() {
             return TransportOutcome::Retry {
                 reason: RetryReason::Server(status.as_u16()),
                 retry_after: None,
@@ -309,6 +325,14 @@ mod tests {
     fn classifies_retryable_and_permanent_responses() {
         for (status, retry_after, expected) in [
             (
+                408,
+                None,
+                TransportOutcome::Retry {
+                    reason: RetryReason::Server(408),
+                    retry_after: None,
+                },
+            ),
+            (
                 429,
                 Some("7"),
                 TransportOutcome::Retry {
@@ -423,17 +447,26 @@ mod tests {
     }
 
     #[test]
-    fn malformed_url_is_permanent_without_exposing_token() {
+    fn malformed_url_is_rejected_at_startup_without_exposing_token() {
         let sensor = sensor("http://[invalid", WindUnit::Mps);
-        let outcome = IngestionClient::new(&sensor)
-            .unwrap()
-            .send(&IngestionRequest::from(&reading(&sensor, 1.0)));
-        let formatted = format!("{outcome:?}");
+        let error = IngestionClient::new(&sensor).unwrap_err();
+        let formatted = error.to_string();
 
-        assert!(matches!(
-            outcome,
-            TransportOutcome::Permanent(PermanentFailure::InvalidRequest(_))
-        ));
         assert!(!formatted.contains("top-secret"));
+    }
+
+    #[test]
+    fn debug_url_removes_credentials_query_and_fragment() {
+        let sensor = sensor(
+            "https://user:password@example.test/readings?api_token=secret#fragment",
+            WindUnit::Mps,
+        );
+        let client = IngestionClient::new(&sensor).unwrap();
+        let debug = format!("{client:?}");
+
+        assert!(debug.contains("https://example.test/readings"));
+        for secret in ["user", "password", "api_token", "secret", "fragment"] {
+            assert!(!debug.contains(secret));
+        }
     }
 }
