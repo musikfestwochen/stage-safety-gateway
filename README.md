@@ -14,9 +14,16 @@ forwards normalized readings to the Musikfestapp Stage Safety API.
 
 ## Installation
 
+Install a current stable [Rust toolchain](https://rustup.rs/), then:
+
 ```sh
 cargo install stage-safety-gateway
+stage-safety-gateway --version
 ```
+
+On Linux, the service user must be allowed to open the serial device. This
+commonly means membership in the `dialout` group; exact group depends on the
+distribution and device permissions.
 
 ## Usage
 
@@ -28,40 +35,63 @@ stage-safety-gateway run              # run the serial-to-HTTP gateway
 stage-safety-gateway run --verbose    # also log readings and HTTP attempts
 ```
 
-Config lives in the platform config dir (Linux: `~/.config/stage-safety-gateway/config.toml`);
-override with `--config <path>`. One TOML file holds serial settings, the
-aggregation policy, and any number of type-tagged `[[sensor]]` entries.
+`--config <path>` selects a non-default config file and works with every
+command. `listen` is diagnostic only and makes no HTTP requests. `run` stays in
+the foreground for service-manager use.
 
-`run` stays in the foreground and handles SIGINT/SIGTERM for service-manager
-use. It retries temporary HTTP failures and serial disconnects. Set `RUST_LOG`
-to override log filtering, for example:
+## Quick Start
 
-```sh
-RUST_LOG=stage_safety_gateway=debug,reqwest=warn stage-safety-gateway run
-```
-
-The capture fixture contains hexadecimal text, not raw serial bytes. Convert it
-before replaying it through a virtual serial pair:
+Create config with the wizard, verify it, then start gateway:
 
 ```sh
-xxd -r -p tests/fixtures/bw-wss-mps.hex > /tmp/bw-wss.raw
-socat -d -d pty,raw,echo=0 pty,raw,echo=0
-# Configure one printed PTY as serial.port, then write /tmp/bw-wss.raw to the other.
+stage-safety-gateway config
+stage-safety-gateway config validate
+stage-safety-gateway run
 ```
+
+Equivalent minimal config:
+
+```toml
+[serial]
+port = "/dev/ttyUSB0"
+baud_rate = 115200
+
+[aggregation]
+change_percent = 20.0
+min_interval_secs = 30
+max_interval_secs = 300
+
+[[sensor]]
+type = "bw-wss"
+name = "WINDMESSER01"
+id = "FD25D5"
+unit = "m/s"
+data_tag = "25DF"
+gust = true
+average_window_secs = 10
+gust_window_secs = 10
+url = "https://musikfestapp.ch/stage-safety/readings"
+token = "replace-with-api-token"
+```
+
+Full config constraints and operational behavior live in documentation below.
 
 ## Documentation
 
-- [Protocol specification](docs/protocol.md)
-- [Reverse-engineering evidence](docs/reverse-engineering.md)
-- [Final capture report](docs/final-capture.md)
-- [Final tested sensor configuration](docs/reference/BW-WSS-FD25D5-final.tcf)
+- [Configuration reference](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/configuration.md)
+- [Operations guide](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/operations.md)
+- [Protocol specification](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/protocol.md)
+- [Reverse-engineering evidence](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/reverse-engineering.md)
+- [Final capture report](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/final-capture.md)
+- [Final tested sensor configuration](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/reference/BW-WSS-FD25D5-final.tcf)
 
 ## Development
 
 ```sh
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test --all-targets
+cargo publish --dry-run --allow-dirty
 ```
 
 The integration test in [`tests/`](tests) decodes

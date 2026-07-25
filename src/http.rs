@@ -129,7 +129,10 @@ impl IngestionClient {
             .redirect(reqwest::redirect::Policy::none())
             .timeout(timeout)
             .build()?;
-        let request = client.post(&sensor.url).build()?;
+        let request = client
+            .post(&sensor.url)
+            .build()
+            .map_err(reqwest::Error::without_url)?;
         let mut log_url = request.url().clone();
         log_url
             .set_password(None)
@@ -161,12 +164,12 @@ impl IngestionClient {
             Ok(response) => response,
             Err(error) if error.is_builder() || error.is_body() => {
                 return TransportOutcome::Permanent(PermanentFailure::InvalidRequest(
-                    error.to_string(),
+                    error.without_url().to_string(),
                 ));
             }
             Err(error) => {
                 return TransportOutcome::Retry {
-                    reason: RetryReason::Network(error.to_string()),
+                    reason: RetryReason::Network(error.without_url().to_string()),
                     retry_after: None,
                 };
             }
@@ -385,14 +388,18 @@ mod tests {
     #[test]
     fn network_errors_are_retryable_and_secrets_are_redacted() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/readings", listener.local_addr().unwrap());
+        let url = format!(
+            "http://{}/readings?api_token=url-secret",
+            listener.local_addr().unwrap()
+        );
         drop(listener);
         let sensor = sensor(&url, WindUnit::Mps);
         let client = IngestionClient::new(&sensor).unwrap();
         let debug = format!("{client:?}");
 
+        let outcome = client.send(&IngestionRequest::from(&reading(&sensor, 1.0)));
         assert!(matches!(
-            client.send(&IngestionRequest::from(&reading(&sensor, 1.0))),
+            outcome,
             TransportOutcome::Retry {
                 reason: RetryReason::Network(_),
                 retry_after: None
@@ -400,6 +407,7 @@ mod tests {
         ));
         assert!(debug.contains("********"));
         assert!(!debug.contains("top-secret"));
+        assert!(!format!("{outcome:?}").contains("url-secret"));
     }
 
     #[test]
