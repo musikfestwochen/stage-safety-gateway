@@ -154,11 +154,44 @@ CV uses only the lower seven bits:
 cv = frame[13] & 0x7F
 ```
 
-About 55 is poor and 110 is excellent. The documented operational LQI is:
+About 55 is poor and 110 is excellent. The documented raw LQI is:
 
 ```python
-lqi = ((94 + rssi_dbm + cv - 55) / 2) * 3.9
+lqi_raw = ((94 + rssi_dbm + cv - 55) / 2) * 3.9
 ```
+
+This averages the RSSI margin above `-94 dBm` and the CV margin above 55, then
+scales the result to an approximate raw range of 0–255. Mantracourt maps raw
+values 50–128 to 0–100% usable quality. Convert by linear interpolation and
+clamp values outside that range:
+
+```python
+lqi_percent = min(100, max(0, (lqi_raw - 50) * 100 / (128 - 50)))
+```
+
+| Raw LQI | Display value |
+|---:|---:|
+| `<= 50` | `0%` |
+| `89` | `50%` |
+| `>= 128` | `100%` |
+
+Mantracourt does not define names for portions of the percentage scale. A UI
+that needs short labels can use this application convention:
+
+| Percentage | Label |
+|---:|---|
+| `100%` | Perfect |
+| `75%` to `< 100%` | Good |
+| `50%` to `< 75%` | OK |
+| `25%` to `< 50%` | Weak |
+| `< 25%` | Poor |
+
+“Perfect” means the top of the normalized scale, not guaranteed packet
+delivery. Values above raw 128 all display as 100%, so retain raw LQI when
+differences between strong links matter. Communication may remain possible
+throughout the 0–100% range but can become intermittent near zero.
+
+These calculations follow the Mantracourt [T24 Technical Manual](https://manualzilla.com/doc/5726126/t24-technical-manual); current display guidance comes from the [T24 Telemetry User Manual](https://www.mantracourt.com/wp-content/uploads/T24-Telemetry-User-Manual.pdf).
 
 RSSI and CV describe the radio reception at the base station. They are not sensor values and legitimately change between otherwise identical packets.
 
