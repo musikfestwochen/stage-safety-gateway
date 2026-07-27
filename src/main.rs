@@ -7,7 +7,8 @@ use inquire::ui::{Color, RenderConfig, StyleSheet, Styled};
 use inquire::validator::Validation;
 use inquire::{Confirm, Password, PasswordDisplayMode, Select, Text};
 use stage_safety_gateway::config::{
-    AggregationConfig, BwWssSensor, Config, Sensor, SerialConfig, WindUnit, DEFAULT_URL,
+    AggregationConfig, BwWssSensor, Config, Sensor, SerialConfig, WindUnit, DEFAULT_MIN_CHANGE_MPS,
+    DEFAULT_URL,
 };
 use stage_safety_gateway::{run_reader, ReaderEvent};
 use std::io::Read;
@@ -164,6 +165,7 @@ fn default_config() -> Config {
         },
         aggregation: AggregationConfig {
             change_percent: 20.0,
+            min_change_mps: DEFAULT_MIN_CHANGE_MPS,
             min_interval_secs: 30,
             max_interval_secs: 300,
         },
@@ -251,6 +253,7 @@ fn port_label(info: &serialport::SerialPortInfo) -> String {
 
 fn edit_aggregation(config: &mut Config) -> Result<()> {
     let percent_default = config.aggregation.change_percent.to_string();
+    let change_default = config.aggregation.min_change_mps.to_string();
     let min_default = config.aggregation.min_interval_secs.to_string();
     let max_default = config.aggregation.max_interval_secs.to_string();
     let percent = Text::new("Send when a value changes by (%):")
@@ -259,6 +262,16 @@ fn edit_aggregation(config: &mut Config) -> Result<()> {
             "immediate send when a reading differs from the last sent value by this much; \
              applies to average and gust independently; 20 is a good start",
         )
+        .with_validator(|input: &str| {
+            Ok(match input.parse::<f64>() {
+                Ok(value) if value.is_finite() && value >= 0.0 => Validation::Valid,
+                _ => Validation::Invalid("enter a finite number >= 0".into()),
+            })
+        })
+        .prompt()?;
+    let change = Text::new("Minimum absolute change (m/s):")
+        .with_default(&change_default)
+        .with_help_message("absolute change floor; suppresses percentage noise near zero wind")
         .with_validator(|input: &str| {
             Ok(match input.parse::<f64>() {
                 Ok(value) if value.is_finite() && value >= 0.0 => Validation::Valid,
@@ -277,6 +290,7 @@ fn edit_aggregation(config: &mut Config) -> Result<()> {
         .with_validator(min_value(1))
         .prompt()?;
     config.aggregation.change_percent = percent.parse()?;
+    config.aggregation.min_change_mps = change.parse()?;
     config.aggregation.min_interval_secs = min.parse()?;
     config.aggregation.max_interval_secs = max.parse()?;
     if config.aggregation.min_interval_secs > config.aggregation.max_interval_secs {

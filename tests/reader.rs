@@ -26,6 +26,7 @@ fn config() -> Config {
         },
         aggregation: AggregationConfig {
             change_percent: 20.0,
+            min_change_mps: 1.0,
             min_interval_secs: 30,
             max_interval_secs: 300,
         },

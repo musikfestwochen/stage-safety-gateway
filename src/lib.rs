@@ -233,8 +233,12 @@ impl PolicyState {
             ReadingKind::WindAverage => self.average(reading.value),
             ReadingKind::WindGust => self.gust_max.unwrap_or(reading.value),
         };
-        let changed = changed(last_value, threshold_value, policy.change_percent)
-            && (reading.kind != ReadingKind::WindGust || threshold_value > last_value);
+        let changed = changed(
+            f64::from(reading.unit.to_mps(last_value)),
+            f64::from(reading.unit.to_mps(threshold_value)),
+            policy.change_percent,
+            policy.min_change_mps,
+        ) && (reading.kind != ReadingKind::WindGust || threshold_value > last_value);
         let min_elapsed = since_send >= Duration::from_secs(policy.min_interval_secs);
         if changed && !min_elapsed {
             self.pending_change = true;
@@ -295,12 +299,9 @@ fn elapsed(later: DateTime<Utc>, earlier: DateTime<Utc>) -> Duration {
         .unwrap_or_default()
 }
 
-fn changed(last: f32, current: f32, percent: f64) -> bool {
-    if last == 0.0 {
-        current != 0.0
-    } else {
-        (f64::from(current) - f64::from(last)).abs() >= f64::from(last).abs() * percent / 100.0
-    }
+fn changed(last: f64, current: f64, percent: f64, minimum: f64) -> bool {
+    let difference = (current - last).abs();
+    difference > 0.0 && difference >= (last.abs() * percent / 100.0).max(minimum)
 }
 
 /// Events emitted by [`run_reader`] in stream order.
@@ -465,6 +466,7 @@ mod tests {
             },
             aggregation: AggregationConfig {
                 change_percent: 20.0,
+                min_change_mps: 1.0,
                 min_interval_secs: 30,
                 max_interval_secs: 300,
             },
@@ -494,6 +496,7 @@ mod tests {
     ) -> AggregationConfig {
         AggregationConfig {
             change_percent,
+            min_change_mps: 0.0,
             min_interval_secs,
             max_interval_secs,
         }
@@ -585,6 +588,34 @@ mod tests {
             .unwrap();
         assert_eq!(next.value, 15.0);
         assert_eq!(next.window_seconds, 5);
+    }
+
+    #[test]
+    fn policy_suppresses_small_average_changes_using_mps_floor() {
+        let mut sensor = sensor("WIND", 0x25df, true);
+        sensor.unit = WindUnit::Kmh;
+        let mut config = policy(20.0, 0, 300);
+        config.min_change_mps = 1.0;
+        let mut state = PolicyState::new();
+
+        state
+            .observe(
+                policy_reading(&sensor, ReadingKind::WindAverage, 0, 0.0),
+                &config,
+            )
+            .unwrap();
+        assert!(state
+            .observe(
+                policy_reading(&sensor, ReadingKind::WindAverage, 1_000, 3.5),
+                &config,
+            )
+            .is_none());
+        assert!(state
+            .observe(
+                policy_reading(&sensor, ReadingKind::WindAverage, 2_000, 4.0),
+                &config,
+            )
+            .is_some());
     }
 
     #[test]

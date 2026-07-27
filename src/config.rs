@@ -7,6 +7,12 @@ use std::path::Path;
 
 use crate::ReadingKind;
 
+pub const DEFAULT_MIN_CHANGE_MPS: f64 = 1.0;
+
+fn default_min_change_mps() -> f64 {
+    DEFAULT_MIN_CHANGE_MPS
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -29,6 +35,10 @@ pub struct AggregationConfig {
     /// Relative change from the last sent value (percent) that triggers an
     /// immediate send, per sensor and reading kind.
     pub change_percent: f64,
+    /// Absolute change floor in metres per second. Defaults when absent so
+    /// configurations written before this field was introduced remain valid.
+    #[serde(default = "default_min_change_mps")]
+    pub min_change_mps: f64,
     /// Minimum seconds between sends per sensor and reading kind (rate limit).
     pub min_interval_secs: u64,
     /// Maximum seconds between sends per sensor and reading kind (heartbeat).
@@ -245,6 +255,9 @@ impl Config {
         if !self.aggregation.change_percent.is_finite() || self.aggregation.change_percent < 0.0 {
             problems.push("aggregation.change_percent must be a finite number >= 0".to_string());
         }
+        if !self.aggregation.min_change_mps.is_finite() || self.aggregation.min_change_mps < 0.0 {
+            problems.push("aggregation.min_change_mps must be a finite number >= 0".to_string());
+        }
         if self.aggregation.max_interval_secs == 0 {
             problems.push("aggregation.max_interval_secs must be positive".to_string());
         }
@@ -321,10 +334,11 @@ impl Config {
     /// Redacted, human-readable summary. Never prints tokens.
     pub fn summary(&self) -> String {
         let mut out = format!(
-            "serial: {} @ {}\naggregation: change_percent={} min_interval={}s max_interval={}s\nsensors ({}):",
+            "serial: {} @ {}\naggregation: change_percent={} min_change={}m/s min_interval={}s max_interval={}s\nsensors ({}):",
             self.serial.port,
             self.serial.baud_rate,
             self.aggregation.change_percent,
+            self.aggregation.min_change_mps,
             self.aggregation.min_interval_secs,
             self.aggregation.max_interval_secs,
             self.sensors.len()
@@ -396,6 +410,7 @@ mod tests {
             },
             aggregation: AggregationConfig {
                 change_percent: 20.0,
+                min_change_mps: DEFAULT_MIN_CHANGE_MPS,
                 min_interval_secs: 30,
                 max_interval_secs: 300,
             },
@@ -421,6 +436,15 @@ mod tests {
         let parsed: Config = toml::from_str(&text).unwrap();
         assert_eq!(parsed, example_config());
         parsed.validate().unwrap();
+    }
+
+    #[test]
+    fn missing_min_change_mps_uses_default() {
+        let parsed: AggregationConfig = toml::from_str(
+            "change_percent = 20.0\nmin_interval_secs = 30\nmax_interval_secs = 300",
+        )
+        .unwrap();
+        assert_eq!(parsed.min_change_mps, DEFAULT_MIN_CHANGE_MPS);
     }
 
     #[test]
@@ -491,6 +515,19 @@ mod tests {
             .to_string()
             .contains("finite number"));
         config.aggregation.change_percent = f64::INFINITY;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_min_change_mps() {
+        let mut config = example_config();
+        config.aggregation.min_change_mps = -1.0;
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("min_change_mps"));
+        config.aggregation.min_change_mps = f64::NAN;
         assert!(config.validate().is_err());
     }
 
@@ -602,6 +639,7 @@ mod tests {
             },
             aggregation: AggregationConfig {
                 change_percent: 20.0,
+                min_change_mps: DEFAULT_MIN_CHANGE_MPS,
                 min_interval_secs: 30,
                 max_interval_secs: 300,
             },

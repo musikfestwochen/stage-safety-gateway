@@ -20,6 +20,7 @@ baud_rate = 115200
 
 [aggregation]
 change_percent = 20.0
+min_change_mps = 1.0
 min_interval_secs = 30
 max_interval_secs = 300
 
@@ -41,6 +42,7 @@ token = "replace-with-api-token"
 | `serial.port` | Required; wizard `/dev/ttyUSB0` | Nonempty serial device path or name. |
 | `serial.baud_rate` | Required; wizard `115200` | Positive serial baud rate. |
 | `aggregation.change_percent` | Required; wizard `20.0` | Relative change from last policy-sent value that triggers a send; finite and at least zero. |
+| `aggregation.min_change_mps` | Optional; `1.0` | Absolute change floor in metres per second. Effective threshold is the larger of this value and the relative threshold calculated from `change_percent`; finite and at least zero. |
 | `aggregation.min_interval_secs` | Required; wizard `30` | Minimum interval for value-change sends; zero allowed. Battery changes bypass it. |
 | `aggregation.max_interval_secs` | Required; wizard `300` | Send on first reading received after this heartbeat interval; positive and not below minimum. |
 | `sensor.type` | Required; `bw-wss` | Sensor type. `bw-wss` is currently the only supported value. |
