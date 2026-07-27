@@ -5,7 +5,8 @@
 Average and gust maintain independent send-policy state. First readings and
 battery-state changes send immediately. Value changes respect
 `min_interval_secs`; stable values send with first reading received after
-`max_interval_secs`.
+`max_interval_secs`. Average changes may trigger in either direction. Gust
+changes trigger only when the window maximum rises by `change_percent`.
 
 Each sensor has an independent FIFO queue containing up to 100 pending requests,
 plus a possible in-flight request. Network failures, timeouts, HTTP 408, HTTP

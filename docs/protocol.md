@@ -1,6 +1,6 @@
 # Broadweigh BW-WSS serial value protocol
 
-This is the implementation specification for decoding Broadweigh BW-WSS value messages received through a T24 base station. [`reverse-engineering.md`](reverse-engineering.md) contains the capture evidence and experiments behind it.
+This is the implementation specification for decoding Broadweigh BW-WSS value messages received through a T24 base station. The supplied Mantracourt [T24 Technical Manual](reference/t24-technical-manual.pdf) is the authoritative source for T24 transport framing, packet types, Data Provider layout, data types, radio metadata, and CRC. [`reverse-engineering.md`](reverse-engineering.md) preserves BW-WSS-specific capture evidence and experiments.
 
 ## Required parser behavior
 
@@ -30,7 +30,7 @@ Offset  Size  Field
 3       1     Packet type and flags
 4       2     Data Tag, big-endian
 6       1     Status bits
-7       1     Data type = 0x04
+7       1     Data type, lower three bits = 0x04
 8       4     Value, IEEE-754 binary32, big-endian
 12      1     RSSI byte
 13      1     CV byte
@@ -52,7 +52,7 @@ length        11
 base address  1
 packet type   Data Provider, broadcast
 tag           25DF
-status        power-up + WSSx m/s flags
+status        power-up + undocumented bits 2 and 3
 data type     float32
 value         0.5597934 m/s
 RSSI          -50 dBm
@@ -89,12 +89,16 @@ Do not hardcode a tag. It is user-configurable and is the only reliable way to a
 
 ## Status: offset 6
 
+The T24 Technical Manual assigns global meanings only to bits 0 and 1. All
+other bits are device-specific. The applicable T24-PA documentation defines
+bits 4–7 as below but marks bits 2 and 3 reserved.
+
 | Bit | Mask | Meaning |
 |---:|---:|---|
 | 0 | `01` | Shunt calibration active |
 | 1 | `02` | Input integrity error |
-| 2 | `04` | T24-PA documentation: reserved. BW-WSSx: asserted for the m/s preset; always matched bit 3. |
-| 3 | `08` | T24-PA documentation: reserved. BW-WSSx: asserted for the m/s preset; always matched bit 2. |
+| 2 | `04` | Reserved (T24-PA documentation) |
+| 3 | `08` | Reserved (T24-PA documentation) |
 | 4 | `10` | Power-up: power was applied/interrupted rather than the device merely being radio-woken |
 | 5 | `20` | Battery low |
 | 6 | `40` | Digital input active |
@@ -105,22 +109,25 @@ Observed values:
 | Status | Meaning |
 |---:|---|
 | `10` | Power-up; used by mph, km/h, fps, and knots captures |
-| `1C` | Power-up + both BW-WSSx m/s flags |
+| `1C` | Power-up + undocumented bits 2 and 3 |
 | `3C` | Same as `1C` + battery low |
 
-Bits 2 and 3 have no published individual names and never separated in testing. Across all five built-in units and a repeated m/s regression, their complete externally observable behavior is: both are set for m/s and clear for every other unit. They do not uniquely encode the unit.
+Bits 2 and 3 have no published individual names and never separated in testing. Empirically, across all five built-in units and a repeated m/s regression, both were set for the m/s preset and clear for every other unit. This is capture evidence, not an official protocol definition. Treat both bits as reserved and do not use them to determine the engineering unit.
 
 The `.tcf` `[Information] Status` value may be stale. Use the status byte in each received packet as the live state.
 
 ## Data type and value: offsets 7–11
 
-The captured data-type byte is `0x04`: T24 type 4, IEEE-754 binary32. Decode offsets 8–11 in big-endian byte order:
+The lower three bits select the data type; upper five bits carry function and
+display metadata.
+The captured byte is `0x04`: T24 type 4, IEEE-754 binary32, with no display
+metadata set. Decode offsets 8–11 in big-endian byte order:
 
 ```python
 value = struct.unpack(">f", frame[8:12])[0]
 ```
 
-The value is already scaled into the sensor's configured engineering unit. The packet does not uniquely identify that unit: status distinguishes m/s from “not m/s,” but cannot distinguish mph, km/h, fps, and knots. Supply unit metadata from configuration.
+The value is already scaled into the sensor's configured engineering unit. The packet does not officially identify that unit. Supply unit metadata from configuration.
 
 Observed built-in gains:
 
@@ -142,7 +149,10 @@ With `FactoryGain=1.002911` and a 10-second gust period, every recorded gust val
 
 ## RSSI, CV, and LQI: offsets 12–13
 
-RSSI uses signed two's-complement with an offset of 45:
+Packets received from remote devices end with RSSI (Received Signal Strength
+Indication) and CV (Correlation Value) bytes before the CRC. RSSI approximates
+received signal strength in dB and uses signed two's-complement with an offset
+of 45:
 
 ```python
 rssi_dbm = int.from_bytes(frame[12:13], signed=True) - 45
@@ -154,16 +164,18 @@ CV uses only the lower seven bits:
 cv = frame[13] & 0x7F
 ```
 
-About 55 is poor and 110 is excellent. The documented raw LQI is:
+About 55 is poor and 110 is good. The documented raw LQI (Link Quality
+Indication) is:
 
 ```python
 lqi_raw = ((94 + rssi_dbm + cv - 55) / 2) * 3.9
 ```
 
 This averages the RSSI margin above `-94 dBm` and the CV margin above 55, then
-scales the result to an approximate raw range of 0–255. Mantracourt maps raw
-values 50–128 to 0–100% usable quality. Convert by linear interpolation and
-clamp values outside that range:
+scales the result to the manual's approximate operational range of 0–255. The
+manual defines raw values 50–128 as the usable range corresponding to 0–100%.
+This specification uses linear interpolation and clamps values outside that
+range:
 
 ```python
 lqi_percent = min(100, max(0, (lqi_raw - 50) * 100 / (128 - 50)))
@@ -191,7 +203,7 @@ delivery. Values above raw 128 all display as 100%, so retain raw LQI when
 differences between strong links matter. Communication may remain possible
 throughout the 0–100% range but can become intermittent near zero.
 
-These calculations follow the Mantracourt [T24 Technical Manual](https://manualzilla.com/doc/5726126/t24-technical-manual); current display guidance comes from the [T24 Telemetry User Manual](https://www.mantracourt.com/wp-content/uploads/T24-Telemetry-User-Manual.pdf).
+These calculations follow the supplied Mantracourt [T24 Technical Manual](reference/t24-technical-manual.pdf); current display guidance comes from the [T24 Telemetry User Manual](https://www.mantracourt.com/wp-content/uploads/T24-Telemetry-User-Manual.pdf).
 
 RSSI and CV describe the radio reception at the base station. They are not sensor values and legitimately change between otherwise identical packets.
 
@@ -217,7 +229,7 @@ Never accept or use a value from a frame with an invalid CRC.
 
 The consumer must know or configure these externally:
 
-- Engineering unit. The status byte only identifies m/s versus the four other built-in choices.
+- Engineering unit. No officially documented packet field identifies it.
 - Which configured Data Tag belongs to which sensor.
 - Transmit interval.
 - Average sample period.
@@ -267,4 +279,4 @@ captured-frame regression check with `cargo test`.
 
 Every structural field, endianness rule, flag needed by a consumer, value conversion, radio field, and checksum rule was validated across the supplied captures. There are no unknown bits blocking an implementation.
 
-The only remaining vendor-internal detail is the separate name or purpose of status bits 2 and 3. Their external behavior is fully characterized for all built-in units: they always move together and are asserted only for m/s.
+The only remaining vendor-internal detail is the separate name or purpose of status bits 2 and 3. Capture evidence fully characterizes their behavior for all built-in units: they always move together and are asserted only for m/s. Official documentation still marks them reserved, so consumers must not assign them protocol meaning.

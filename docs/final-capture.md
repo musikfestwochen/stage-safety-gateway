@@ -32,7 +32,7 @@ The normative parsing rules are in [`protocol.md`](protocol.md).
 | Incomplete trailing bytes | 0 |
 | Frame lengths | 16 bytes only |
 | Packet types | `0x23` only: broadcast Data Provider |
-| Status values | `0x1C` only: m/s flags + power-up |
+| Status values | `0x1C` only: power-up + undocumented bits 2–3 (empirically correlated with the m/s preset) |
 | Data types | `0x04` only: big-endian float32 |
 | Average packets (`25DF`) | 329 |
 | Gust packets (`25E0`) | 334 |
