@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0](https://github.com/musikfestwochen/stage-safety-gateway/compare/v1.0.2...v2.0.0) - 2026-07-27
+
+### Added
+
+- add minimum wind change threshold
+
 ## [1.0.2](https://github.com/musikfestwochen/stage-safety-gateway/compare/v1.0.1...v1.0.2) - 2026-07-27
 
 ### Fixed
