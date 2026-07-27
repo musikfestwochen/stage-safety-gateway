@@ -3,6 +3,8 @@
 > **Implementation reference:** [`protocol.md`](protocol.md) defines the final framing and decoding rules. This report preserves the evidence, configuration comparisons, and experiments that established them. Raw captures and generated CSV files were intentionally omitted from the gateway repository after the results were verified.
 >
 > **Final dataset:** [`final-capture.md`](final-capture.md) summarizes the final settings, decoded values, radio metadata, and delivery gaps.
+>
+> **Official transport reference:** the supplied Mantracourt [T24 Technical Manual](reference/t24-technical-manual.pdf). Reserved-bit findings below are empirical and are not defined by that manual.
 
 ## Result
 
@@ -50,8 +52,8 @@ The T24-PA technical manual is applicable because the official WSS manual says t
 |---:|---:|---|
 | 0 | `01` | Shunt calibration active |
 | 1 | `02` | Input integrity error |
-| 2 | `04` | Reserved in T24-PA docs; asserted for the m/s preset and clear for every other offered unit. Always matched bit 3. |
-| 3 | `08` | Reserved in T24-PA docs; asserted for the m/s preset and clear for every other offered unit. Always matched bit 2. |
+| 2 | `04` | Officially reserved; empirically asserted for the m/s preset and clear for every other offered unit. Always matched bit 3. |
+| 3 | `08` | Officially reserved; empirically asserted for the m/s preset and clear for every other offered unit. Always matched bit 2. |
 | 4 | `10` | Power-up: power was interrupted/applied, not merely woken from sleep |
 | 5 | `20` | Battery low |
 | 6 | `40` | Digital input active |
@@ -207,7 +209,7 @@ The complete preset truth table is therefore:
 | 4 | fps | 3.6666 | `00` |
 | 5 | knots | ~2.17244 | `00` |
 
-Bits 2 and 3 have never separated. Empirically, the pair is an **m/s-preset indicator**, not a general unit number. The T24-PA documentation still calls the individual bits reserved, so their separate internal names remain unavailable.
+Bits 2 and 3 have never separated. Empirically, the pair behaves as an **m/s-preset indicator**, not a general unit number. This behavior is not officially documented: the T24-PA documentation calls both bits reserved, so consumers must not rely on it as a protocol guarantee.
 
 `broadweigh_decoded_6.csv` contains the complete sixth decode.
 
@@ -255,7 +257,7 @@ cargo test
 ## Protocol references
 
 - Supplied `Broadweigh-User-Manual.md`, especially ID/Data Tags, BW-WSS data rate, gust behavior, units, and base-station serial limitations.
-- Mantracourt T24 Technical Manual (packet structure, Data Provider layout, CRC, types, RSSI/CV): https://manualzilla.com/doc/5726126/t24-technical-manual
+- Supplied Mantracourt [T24 Technical Manual](reference/t24-technical-manual.pdf) (packet structure, Data Provider layout, CRC, types, RSSI/CV)
 - Official T24 Telemetry User Manual download (module-specific status bits): https://us.mantracourt.com/wpfd_file/t24-telemetry-user-manual-8/
 - Official T24-WSS manual: https://www.mantracourt.com/userfiles/documents/t24-wss_manual.pdf
 
