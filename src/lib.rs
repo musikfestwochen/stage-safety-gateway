@@ -186,7 +186,6 @@ pub struct PolicyState {
     last_sent_battery_low: Option<bool>,
     weighted_sum: f64,
     total_weight: f64,
-    gust_min: Option<f32>,
     gust_max: Option<f32>,
     pending_change: bool,
 }
@@ -221,10 +220,6 @@ impl PolicyState {
                 self.total_weight += weight;
             }
             ReadingKind::WindGust => {
-                self.gust_min = Some(
-                    self.gust_min
-                        .map_or(reading.value, |value| value.min(reading.value)),
-                );
                 self.gust_max = Some(
                     self.gust_max
                         .map_or(reading.value, |value| value.max(reading.value)),
@@ -236,9 +231,10 @@ impl PolicyState {
         let last_value = self.last_sent_value.unwrap_or(reading.value);
         let threshold_value = match reading.kind {
             ReadingKind::WindAverage => self.average(reading.value),
-            ReadingKind::WindGust => self.farthest_gust(last_value),
+            ReadingKind::WindGust => self.gust_max.unwrap_or(reading.value),
         };
-        let changed = changed(last_value, threshold_value, policy.change_percent);
+        let changed = changed(last_value, threshold_value, policy.change_percent)
+            && (reading.kind != ReadingKind::WindGust || threshold_value > last_value);
         let min_elapsed = since_send >= Duration::from_secs(policy.min_interval_secs);
         if changed && !min_elapsed {
             self.pending_change = true;
@@ -273,16 +269,6 @@ impl PolicyState {
         }
     }
 
-    fn farthest_gust(&self, baseline: f32) -> f32 {
-        let min = self.gust_min.unwrap_or(baseline);
-        let max = self.gust_max.unwrap_or(baseline);
-        if (max - baseline).abs() >= (min - baseline).abs() {
-            max
-        } else {
-            min
-        }
-    }
-
     fn current_aggregate(&self, reading: &Reading<'_>) -> f32 {
         match reading.kind {
             ReadingKind::WindAverage => self.average(reading.value),
@@ -297,7 +283,6 @@ impl PolicyState {
         self.last_sent_battery_low = Some(reading.battery_low);
         self.weighted_sum = 0.0;
         self.total_weight = 0.0;
-        self.gust_min = None;
         self.gust_max = None;
         self.pending_change = false;
     }
@@ -632,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_gust_sends_farthest_threshold_extreme() {
+    fn policy_gust_only_sends_upward_window_maximum() {
         let sensor = sensor("WIND", 0x25df, true);
         let config = policy(50.0, 10, 300);
         let mut state = PolicyState::new();
@@ -652,14 +637,21 @@ mod tests {
                 .is_none());
         }
 
-        let sent = state
+        assert!(state
             .observe(
                 policy_reading(&sensor, ReadingKind::WindGust, 10_000, 11.0),
                 &config,
             )
+            .is_none());
+
+        let sent = state
+            .observe(
+                policy_reading(&sensor, ReadingKind::WindGust, 11_000, 15.0),
+                &config,
+            )
             .unwrap();
-        assert_eq!(sent.value, 4.0);
-        assert_eq!(sent.window_seconds, 10);
+        assert_eq!(sent.value, 15.0);
+        assert_eq!(sent.window_seconds, 11);
     }
 
     #[test]
