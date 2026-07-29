@@ -1,0 +1,13 @@
+[Unit]
+Description=Stage Safety Gateway
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/stage-safety-gateway run
+Restart=always
+RestartSec=5
+TimeoutStopSec=35
+
+[Install]
+WantedBy=default.target

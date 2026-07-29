@@ -44,31 +44,103 @@ and radio metadata; restrict access to captured logs.
 `run` does not daemonize or prompt. Initial config, invalid endpoint, or
 serial-open failure exits nonzero; an unavailable API retries at runtime and
 serial disconnects reconnect every second. On Unix the serial port opens
-exclusively, preventing two instances from consuming the same input.
+exclusively. `run` and serial `listen` also hold a per-user runtime lock, so a
+second command exits immediately instead of competing for input. Config editing,
+validation, and `listen --stdin` remain available while the gateway runs.
 
-Example systemd unit:
+Use the same Linux user for installation, configuration, and the service. This
+keeps the default config path and its `0600` permissions working without a
+dedicated account or files under `/etc`.
+
+Enable systemd user services at boot without requiring a login:
+
+```sh
+sudo loginctl enable-linger "$USER"
+```
+
+`enable-linger` starts the user's service manager during boot and keeps it
+running after logout. Serial access often works already, including on typical
+Raspberry Pi installations. If logs report permission denied for the configured
+device, add the current user to that device's group, commonly:
+
+```sh
+sudo usermod -aG dialout "$USER"
+```
+
+The group may differ from `dialout`. Reboot after changing membership so the
+lingering user manager receives the new groups.
+
+The binary embeds `packaging/systemd/stage-safety-gateway.service`:
 
 ```ini
 [Unit]
 Description=Stage Safety Gateway
-Wants=network-online.target
-After=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=stage-safety
-SupplementaryGroups=dialout
-Environment=RUST_LOG=stage_safety_gateway=info
-ExecStart=/usr/local/bin/stage-safety-gateway --config /etc/stage-safety-gateway/config.toml run
-Restart=on-failure
-RestartSec=2
+ExecStart=%h/.cargo/bin/stage-safety-gateway run
+Restart=always
+RestartSec=5
+TimeoutStopSec=35
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 ```
 
-Adjust executable, config path, user, and serial-device group. SIGTERM performs
-a bounded graceful shutdown; active HTTP attempt may take up to 30 seconds.
+Install and start it after creating valid config:
+
+```sh
+stage-safety-gateway service install
+```
+
+The installer writes the unit to `~/.config/systemd/user`, substitutes the
+current executable and config paths, reloads systemd, enables boot startup, and
+starts or restarts the service. Global `--config <path>` is honored. Running it
+again updates an existing installed unit. No network ordering is needed because
+HTTP failures retry internally.
+`Restart=always` recovers failures and unexpected clean exits; manual
+`systemctl --user stop` remains stopped. Disabling systemd's start limit keeps
+retrying if config or the serial device is temporarily unavailable.
+
+Check boot setup and follow logs:
+
+```sh
+loginctl show-user "$USER" -p Linger
+systemctl --user is-enabled stage-safety-gateway
+systemctl --user status stage-safety-gateway
+journalctl --user -u stage-safety-gateway -f
+```
+
+SIGTERM performs a bounded graceful shutdown; an active HTTP attempt may take up
+to 30 seconds. `TimeoutStopSec=35` leaves enough time before systemd forces exit.
+
+### Configuration Changes
+
+The wizard remains usable while the service owns the serial port. Port listing
+does not open devices. The running process keeps its loaded config until
+restarted; after saving, apply changes with:
+
+```sh
+stage-safety-gateway config
+systemctl --user restart stage-safety-gateway
+```
+
+Config replacement is atomic and synced to disk, so the service sees either the
+complete old file or the complete new file, including across an abrupt restart.
+
+### Serial Diagnostics
+
+Serial `listen` cannot run beside the service. Stop and restore it explicitly:
+
+```sh
+systemctl --user stop stage-safety-gateway
+stage-safety-gateway listen
+systemctl --user start stage-safety-gateway
+```
+
+`listen --stdin` does not access serial hardware and can run without stopping
+the service.
 
 ## Security
 

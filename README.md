@@ -30,9 +30,21 @@ stage-safety-gateway config validate
 stage-safety-gateway run
 ```
 
-On Linux, service user needs access to serial device, commonly through
-`dialout` group. Use global `--config <path>` option to select non-default
-config file.
+On Linux, enable user services before login, then install boot autostart and
+crash recovery:
+
+```sh
+sudo loginctl enable-linger "$USER"
+stage-safety-gateway service install
+```
+
+`enable-linger` starts the user's service manager during boot and keeps it
+running after logout. If gateway reports denied serial access, grant the current
+user the device's group, commonly `sudo usermod -aG dialout "$USER"`, then
+reboot. Raspberry Pi users often already have access. See the
+[operations guide](https://github.com/musikfestwochen/stage-safety-gateway/blob/main/docs/operations.md#service-operation)
+for status, logs, and diagnostics.
+Use global `--config <path>` option to select non-default config file.
 
 ## Commands
 
@@ -44,6 +56,7 @@ config file.
 | `stage-safety-gateway listen --stdin` | Decode raw binary input from stdin. |
 | `stage-safety-gateway run` | Run foreground serial-to-HTTP gateway. |
 | `stage-safety-gateway run --verbose` | Also log readings, policy decisions, and HTTP attempts. |
+| `stage-safety-gateway service install` | Install, enable, and start systemd user service. |
 
 ## Configuration
 

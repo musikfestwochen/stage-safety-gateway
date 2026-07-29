@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use crossterm::cursor::MoveTo;
 use crossterm::style::Stylize;
@@ -11,11 +11,16 @@ use stage_safety_gateway::config::{
     DEFAULT_URL,
 };
 use stage_safety_gateway::{run_reader, ReaderEvent};
+use std::fs::{self, TryLockError};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::process::Command;
 use std::time::Duration;
 
 mod run;
+
+const SYSTEMD_SERVICE: &str = include_str!("../packaging/systemd/stage-safety-gateway.service");
 
 #[derive(Parser)]
 #[command(
@@ -52,12 +57,23 @@ enum Commands {
         #[arg(long)]
         stdin: bool,
     },
+    /// Manage persistent background operation.
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
 }
 
 #[derive(Subcommand)]
 enum ConfigAction {
     /// Validate the configuration and print a redacted summary.
     Validate,
+}
+
+#[derive(Subcommand)]
+enum ServiceAction {
+    /// Install, enable, and start the systemd user service.
+    Install,
 }
 
 fn main() -> Result<()> {
@@ -76,6 +92,9 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Run { verbose } => {
+            let _lock = acquire_runtime_lock(
+                "gateway already running\n\nstatus:\n  systemctl --user status stage-safety-gateway",
+            )?;
             let default_filter = if verbose {
                 "stage_safety_gateway=debug"
             } else {
@@ -89,15 +108,154 @@ fn main() -> Result<()> {
             run::run(config, &path)
         }
         Commands::Listen { stdin } => {
+            let _lock = if stdin {
+                None
+            } else {
+                Some(acquire_runtime_lock(
+                    "gateway currently owns the serial device\n\nstop it before listening:\n  systemctl --user stop stage-safety-gateway",
+                )?)
+            };
             let config = Config::load(&path)?;
             listen(&config, stdin)
         }
+        Commands::Service {
+            action: ServiceAction::Install,
+        } => install_service(&path),
     }
 }
 
 fn default_path() -> Result<PathBuf> {
     let dir = dirs::config_dir().context("cannot determine platform config dir; pass --config")?;
     Ok(dir.join("stage-safety-gateway").join("config.toml"))
+}
+
+#[cfg(target_os = "linux")]
+fn install_service(config_path: &Path) -> Result<()> {
+    Config::load(config_path)?;
+    let config_path = fs::canonicalize(config_path)
+        .with_context(|| format!("cannot resolve config path {}", config_path.display()))?;
+    let directory = dirs::config_dir()
+        .context("cannot determine user config directory")?
+        .join("systemd/user");
+    fs::create_dir_all(&directory)
+        .with_context(|| format!("cannot create {}", directory.display()))?;
+    let path = directory.join("stage-safety-gateway.service");
+    let executable = std::env::current_exe().context("cannot locate gateway executable")?;
+    let unit = render_service_unit(&executable, &config_path)?;
+    fs::write(&path, unit).with_context(|| format!("cannot write {}", path.display()))?;
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+        .with_context(|| format!("cannot set permissions on {}", path.display()))?;
+
+    systemctl(&["daemon-reload"])?;
+    systemctl(&["enable", "stage-safety-gateway"])?;
+    systemctl(&["restart", "stage-safety-gateway"])?;
+    println!("installed and started: {}", path.display());
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_service(_config_path: &Path) -> Result<()> {
+    bail!("systemd service installation is supported only on Linux")
+}
+
+fn systemd_quote_path(path: &Path) -> Result<String> {
+    let path = path.to_str().context("systemd path is not valid UTF-8")?;
+    if path.contains(['\n', '\r']) {
+        bail!("systemd path contains a line break")
+    }
+    let path = path
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%")
+        .replace('$', "$$");
+    Ok(format!("\"{path}\""))
+}
+
+fn render_service_unit(executable: &Path, config_path: &Path) -> Result<String> {
+    let executable = systemd_quote_path(executable)?;
+    let config_path = systemd_quote_path(config_path)?;
+    Ok(SYSTEMD_SERVICE.replace(
+        "ExecStart=%h/.cargo/bin/stage-safety-gateway run",
+        &format!("ExecStart={executable} --config {config_path} run"),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn systemctl(arguments: &[&str]) -> Result<()> {
+    let status = Command::new("systemctl")
+        .arg("--user")
+        .args(arguments)
+        .status()
+        .context("cannot run systemctl --user")?;
+    if !status.success() {
+        bail!("systemctl --user {} failed", arguments.join(" "));
+    }
+    Ok(())
+}
+
+struct RuntimeLock {
+    _file: fs::File,
+}
+
+fn acquire_runtime_lock(busy_message: &str) -> Result<RuntimeLock> {
+    match try_runtime_lock(&runtime_lock_path()?)? {
+        Some(lock) => Ok(lock),
+        None => bail!(busy_message.to_owned()),
+    }
+}
+
+fn runtime_is_active() -> bool {
+    runtime_lock_path()
+        .ok()
+        .is_some_and(|path| runtime_lock_is_held(&path))
+}
+
+fn runtime_lock_path() -> Result<PathBuf> {
+    runtime_lock_path_from(dirs::runtime_dir(), dirs::cache_dir())
+}
+
+fn runtime_lock_path_from(runtime: Option<PathBuf>, cache: Option<PathBuf>) -> Result<PathBuf> {
+    // ponytail: one gateway per user; use per-config locks if multiple gateways are needed.
+    if let Some(directory) = runtime {
+        return Ok(directory.join("stage-safety-gateway.lock"));
+    }
+    let directory = cache.context("cannot determine user runtime or cache directory")?;
+    Ok(directory.join("stage-safety-gateway/runtime.lock"))
+}
+
+fn try_runtime_lock(path: &Path) -> Result<Option<RuntimeLock>> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("cannot create runtime directory {}", parent.display()))?;
+    }
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .with_context(|| format!("cannot open runtime lock {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("cannot secure runtime lock {}", path.display()))?;
+    }
+    match file.try_lock() {
+        Ok(()) => Ok(Some(RuntimeLock { _file: file })),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => {
+            Err(error).with_context(|| format!("cannot lock runtime file {}", path.display()))
+        }
+    }
+}
+
+fn runtime_lock_is_held(path: &Path) -> bool {
+    let Ok(file) = fs::OpenOptions::new().read(true).write(true).open(path) else {
+        return false;
+    };
+    matches!(file.try_lock(), Err(TryLockError::WouldBlock))
 }
 
 fn wizard(path: &Path) -> Result<()> {
@@ -123,6 +281,11 @@ fn wizard(path: &Path) -> Result<()> {
 
     loop {
         crossterm::execute!(std::io::stdout(), Clear(ClearType::All), MoveTo(0, 0))?;
+        if runtime_is_active() {
+            warn(
+                "gateway currently running; editing is safe, but changes apply only after restart",
+            );
+        }
         let action = Select::new(
             &format!("Configuration ({})", path.display()),
             vec![
@@ -146,6 +309,11 @@ fn wizard(path: &Path) -> Result<()> {
             _ => match config.save(path) {
                 Ok(()) => {
                     note(&format!("saved to {}", path.display()));
+                    if runtime_is_active() {
+                        println!(
+                            "  restart gateway to apply changes:\n\n    systemctl --user restart stage-safety-gateway\n"
+                        );
+                    }
                     return Ok(());
                 }
                 Err(e) => {
@@ -567,4 +735,63 @@ fn listen_once<R: Read>(input: &mut R, config: &Config) -> std::io::Result<()> {
         }
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_lock_blocks_until_holder_exits() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("gateway.lock");
+
+        assert!(!runtime_lock_is_held(&path));
+        assert!(!path.exists(), "probing must not create the lock file");
+
+        let first = try_runtime_lock(&path).unwrap().unwrap();
+        assert!(try_runtime_lock(&path).unwrap().is_none());
+        assert!(runtime_lock_is_held(&path));
+
+        drop(first);
+        assert!(!runtime_lock_is_held(&path));
+        assert!(try_runtime_lock(&path).unwrap().is_some());
+        assert!(
+            path.exists(),
+            "persistent lock file must not act as a stale lock"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn service_installer_uses_current_executable_path() {
+        let unit = render_service_unit(
+            Path::new("/opt/Stage Safety/gateway"),
+            Path::new("/home/stage/.config/gateway.toml"),
+        )
+        .unwrap();
+        assert!(
+            unit.contains(
+                "ExecStart=\"/opt/Stage Safety/gateway\" --config \"/home/stage/.config/gateway.toml\" run"
+            ),
+            "{unit}"
+        );
+        assert!(!unit.contains("%h/.cargo/bin"), "{unit}");
+    }
+
+    #[test]
+    fn runtime_lock_falls_back_to_user_cache() {
+        let cache = PathBuf::from("/home/stage/.cache");
+        assert_eq!(
+            runtime_lock_path_from(None, Some(cache)).unwrap(),
+            PathBuf::from("/home/stage/.cache/stage-safety-gateway/runtime.lock")
+        );
+    }
 }
