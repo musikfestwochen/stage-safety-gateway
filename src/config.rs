@@ -3,6 +3,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 use crate::ReadingKind;
@@ -217,30 +218,44 @@ impl Config {
 
     pub fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("cannot create directory {}", parent.display()))?;
-        }
+        let path = if path.is_symlink() {
+            fs::canonicalize(path)
+                .with_context(|| format!("cannot resolve config symlink {}", path.display()))?
+        } else {
+            path.to_path_buf()
+        };
+        let path = path.as_path();
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)
+            .with_context(|| format!("cannot create directory {}", parent.display()))?;
         let text = toml::to_string_pretty(self).context("cannot serialize config")?;
-        // Config contains API tokens: create with 0600 from the start so the
-        // file is never group/world-readable, then tighten pre-existing files.
+
+        // Write beside the destination so persist is an atomic filesystem rename.
+        let mut temp = tempfile::NamedTempFile::new_in(parent)
+            .with_context(|| format!("cannot create temporary file in {}", parent.display()))?;
         #[cfg(unix)]
         {
-            use std::io::Write;
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(path)
-                .and_then(|mut file| file.write_all(text.as_bytes()))
-                .with_context(|| format!("cannot write config file {}", path.display()))?;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+            use std::os::unix::fs::PermissionsExt;
+            // Config contains API tokens; replacement must also tighten an old file.
+            temp.as_file()
+                .set_permissions(fs::Permissions::from_mode(0o600))
+                .context("cannot secure temporary config file")?;
         }
-        #[cfg(not(unix))]
-        fs::write(path, text)
+        temp.write_all(text.as_bytes())
             .with_context(|| format!("cannot write config file {}", path.display()))?;
+        temp.as_file()
+            .sync_all()
+            .with_context(|| format!("cannot sync config file {}", path.display()))?;
+        temp.persist(path)
+            .map_err(|error| error.error)
+            .with_context(|| format!("cannot replace config file {}", path.display()))?;
+        #[cfg(unix)]
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| format!("cannot sync directory {}", parent.display()))?;
         Ok(())
     }
 
@@ -613,6 +628,74 @@ mod tests {
         let debug = format!("{:?}", example_config());
         assert!(debug.contains("********"), "{debug}");
         assert!(!debug.contains("secret"), "{debug}");
+    }
+
+    #[test]
+    fn save_atomically_replaces_existing_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = example_config();
+        config.save(&path).unwrap();
+
+        config.serial.baud_rate = 9_600;
+        config.save(&path).unwrap();
+
+        assert_eq!(Config::load(&path).unwrap(), config);
+    }
+
+    #[test]
+    fn failed_save_preserves_existing_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let config = example_config();
+        config.save(&path).unwrap();
+        let original = fs::read_to_string(&path).unwrap();
+
+        let mut invalid = config;
+        invalid.sensors.clear();
+        assert!(invalid.save(&path).is_err());
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_config_permissions_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        fs::write(&path, "old config").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        example_config().save(&path).unwrap();
+
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_preserves_config_symlink_and_updates_target() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("config.toml");
+        let link = directory.path().join("current.toml");
+        let mut config = example_config();
+        config.save(&target).unwrap();
+        symlink(&target, &link).unwrap();
+
+        config.serial.baud_rate = 9_600;
+        config.save(&link).unwrap();
+
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(Config::load(&target).unwrap(), config);
+        assert_eq!(Config::load(&link).unwrap(), config);
     }
 
     #[test]

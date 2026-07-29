@@ -6,8 +6,8 @@ lives in the platform config directory. On Linux this is
 `~/.config/stage-safety-gateway/config.toml` when `XDG_CONFIG_HOME` is unset.
 
 `stage-safety-gateway config` opens the interactive editor. Saving validates
-the whole file. `config validate` is noninteractive and prints a token-redacted
-summary.
+the whole file and replaces it atomically. `config validate` is noninteractive
+and prints a token-redacted summary.
 
 Wizard supplies initial values. Hand-written TOML has no implicit defaults
 except where noted below, rejects unknown fields, and requires at least one
@@ -59,4 +59,9 @@ token = "replace-with-api-token"
 Base and enabled gust tags must not collide across sensors. Gust cannot be
 enabled for base tag `FFFF`, because no `data_tag + 1` exists.
 
-`run` loads config once; restart it after config changes.
+`run` loads config once. The wizard remains available while it runs and reports
+that a restart is required after saving. With the supported systemd user service:
+
+```sh
+systemctl --user restart stage-safety-gateway
+```

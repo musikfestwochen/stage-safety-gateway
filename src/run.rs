@@ -109,7 +109,7 @@ pub fn run(config: Config, path: &Path) -> Result<()> {
 
     let port = open_serial(&config).with_context(|| {
         format!(
-            "cannot open serial device {} at startup",
+            "cannot open serial device {} at startup; it may be missing, inaccessible, or already in use",
             config.serial.port
         )
     })?;
