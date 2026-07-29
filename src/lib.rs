@@ -186,7 +186,7 @@ pub struct PolicyState {
     last_sent_battery_low: Option<bool>,
     weighted_sum: f64,
     total_weight: f64,
-    gust_max: Option<f32>,
+    gust_max: Option<(f32, DateTime<Utc>)>,
     pending_change: bool,
 }
 
@@ -220,10 +220,14 @@ impl PolicyState {
                 self.total_weight += weight;
             }
             ReadingKind::WindGust => {
-                self.gust_max = Some(
-                    self.gust_max
-                        .map_or(reading.value, |value| value.max(reading.value)),
-                );
+                self.gust_max = Some(match self.gust_max {
+                    Some(maximum)
+                        if maximum.0.max(reading.value).to_bits() == maximum.0.to_bits() =>
+                    {
+                        maximum
+                    }
+                    _ => (reading.value, reading.observed_at),
+                });
             }
         }
 
@@ -231,7 +235,7 @@ impl PolicyState {
         let last_value = self.last_sent_value.unwrap_or(reading.value);
         let threshold_value = match reading.kind {
             ReadingKind::WindAverage => self.average(reading.value),
-            ReadingKind::WindGust => self.gust_max.unwrap_or(reading.value),
+            ReadingKind::WindGust => self.gust_max.map_or(reading.value, |(value, _)| value),
         };
         let changed = changed(
             f64::from(reading.unit.to_mps(last_value)),
@@ -259,9 +263,13 @@ impl PolicyState {
             None
         }?;
 
+        let gust_observed_at = self.gust_max.map(|(_, observed_at)| observed_at);
         reading.value = value;
         reading.window_seconds = since_send.as_secs();
         self.record_send(&reading);
+        if reading.kind == ReadingKind::WindGust {
+            reading.observed_at = gust_observed_at.expect("gust aggregate must have a maximum");
+        }
         Some(reading)
     }
 
@@ -276,7 +284,7 @@ impl PolicyState {
     fn current_aggregate(&self, reading: &Reading<'_>) -> f32 {
         match reading.kind {
             ReadingKind::WindAverage => self.average(reading.value),
-            ReadingKind::WindGust => self.gust_max.unwrap_or(reading.value),
+            ReadingKind::WindGust => self.gust_max.map_or(reading.value, |(value, _)| value),
         }
     }
 
@@ -713,6 +721,86 @@ mod tests {
             )
             .unwrap();
         assert_eq!(heartbeat.value, 12.0);
+        assert_eq!(
+            heartbeat.observed_at,
+            policy_reading(&sensor, ReadingKind::WindGust, 9_000, 12.0).observed_at
+        );
+        assert_eq!(heartbeat.window_seconds, 10);
+    }
+
+    #[test]
+    fn policy_gust_pending_change_preserves_peak_time_and_send_boundary() {
+        let sensor = sensor("WIND", 0x25df, true);
+        let config = policy(50.0, 10, 300);
+        let mut state = PolicyState::new();
+
+        state
+            .observe(
+                policy_reading(&sensor, ReadingKind::WindGust, 0, 10.0),
+                &config,
+            )
+            .unwrap();
+        assert!(state
+            .observe(
+                policy_reading(&sensor, ReadingKind::WindGust, 5_000, 20.0),
+                &config,
+            )
+            .is_none());
+
+        let sent = state
+            .observe(
+                policy_reading(&sensor, ReadingKind::WindGust, 10_000, 11.0),
+                &config,
+            )
+            .unwrap();
+        assert_eq!(sent.value, 20.0);
+        assert_eq!(
+            sent.observed_at,
+            policy_reading(&sensor, ReadingKind::WindGust, 5_000, 20.0).observed_at
+        );
+        assert_eq!(sent.window_seconds, 10);
+
+        assert!(state
+            .observe(
+                policy_reading(&sensor, ReadingKind::WindGust, 15_000, 40.0),
+                &config,
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn policy_gust_peak_time_keeps_latest_battery_metadata() {
+        let sensor = sensor("WIND", 0x25df, true);
+        let config = policy(1000.0, 30, 300);
+        let mut state = PolicyState::new();
+
+        state
+            .observe(
+                policy_reading(&sensor, ReadingKind::WindGust, 0, 10.0),
+                &config,
+            )
+            .unwrap();
+        assert!(state
+            .observe(
+                policy_reading(&sensor, ReadingKind::WindGust, 2_000, 12.0),
+                &config,
+            )
+            .is_none());
+
+        let mut low = policy_reading(&sensor, ReadingKind::WindGust, 3_000, 11.0);
+        low.battery_low = true;
+        low.rssi_dbm = -80;
+        low.cv = 90;
+        let sent = state.observe(low, &config).unwrap();
+
+        assert_eq!(sent.value, 12.0);
+        assert_eq!(
+            sent.observed_at,
+            policy_reading(&sensor, ReadingKind::WindGust, 2_000, 12.0).observed_at
+        );
+        assert!(sent.battery_low);
+        assert_eq!(sent.rssi_dbm, -80);
+        assert_eq!(sent.cv, 90);
     }
 
     #[test]

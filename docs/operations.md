@@ -9,7 +9,10 @@ battery-state changes send immediately. Value changes respect
 changes trigger only when the window maximum rises. For both kinds, effective
 change threshold is the larger of the relative threshold calculated from
 `change_percent` and `min_change_mps`, after converting readings to metres per
-second.
+second. Aggregated gusts retain the observation timestamp of their maximum;
+their window length and send-policy interval still end at the reading that
+triggered the send. Battery, RSSI, and CV metadata also come from that latest
+reading.
 
 Each sensor has an independent FIFO queue containing up to 100 pending requests,
 plus a possible in-flight request. Network failures, timeouts, HTTP 408, HTTP
