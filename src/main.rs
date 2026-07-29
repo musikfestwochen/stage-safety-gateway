@@ -208,7 +208,7 @@ fn acquire_runtime_lock(busy_message: &str) -> Result<RuntimeLock> {
 fn runtime_is_active() -> bool {
     runtime_lock_path()
         .ok()
-        .is_some_and(|path| matches!(try_runtime_lock(&path), Ok(None)))
+        .is_some_and(|path| runtime_lock_is_held(&path))
 }
 
 fn runtime_lock_path() -> Result<PathBuf> {
@@ -249,6 +249,13 @@ fn try_runtime_lock(path: &Path) -> Result<Option<RuntimeLock>> {
             Err(error).with_context(|| format!("cannot lock runtime file {}", path.display()))
         }
     }
+}
+
+fn runtime_lock_is_held(path: &Path) -> bool {
+    let Ok(file) = fs::OpenOptions::new().read(true).write(true).open(path) else {
+        return false;
+    };
+    matches!(file.try_lock(), Err(TryLockError::WouldBlock))
 }
 
 fn wizard(path: &Path) -> Result<()> {
@@ -739,10 +746,15 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("gateway.lock");
 
+        assert!(!runtime_lock_is_held(&path));
+        assert!(!path.exists(), "probing must not create the lock file");
+
         let first = try_runtime_lock(&path).unwrap().unwrap();
         assert!(try_runtime_lock(&path).unwrap().is_none());
+        assert!(runtime_lock_is_held(&path));
 
         drop(first);
+        assert!(!runtime_lock_is_held(&path));
         assert!(try_runtime_lock(&path).unwrap().is_some());
         assert!(
             path.exists(),
