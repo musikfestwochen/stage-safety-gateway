@@ -18,8 +18,9 @@ Each sensor has an independent FIFO queue containing up to 100 pending requests,
 plus a possible in-flight request. Network failures, timeouts, HTTP 408, HTTP
 429, and HTTP 5xx retry the unchanged in-flight request before later requests.
 Backoff starts at one second and doubles to 60 seconds; an integer-seconds
-`Retry-After` on HTTP 429 overrides that attempt's delay. HTTP requests time out
-after 30 seconds. Permanent HTTP failures are logged and discarded.
+`Retry-After` on HTTP 429 overrides that attempt's delay, capped at 60 seconds.
+HTTP requests time out after 30 seconds. Permanent HTTP failures are logged and
+discarded.
 
 Queues exist only in memory. A full queue drops its oldest pending request, not
 the in-flight request. Shutdown reports but does not drain pending requests;
@@ -37,6 +38,10 @@ measurements, policy decisions, normalized payloads, and HTTP outcomes. Set
 ```sh
 RUST_LOG=stage_safety_gateway=debug,reqwest=warn stage-safety-gateway run
 ```
+
+Normal mode also reports first readings, battery and connection transitions,
+detailed retry decisions, and five-minute sensor/serial health counters. Final
+health counters and uptime are logged during clean shutdown.
 
 Configured API tokens and URL credentials/query parameters are excluded from
 gateway logs. Verbose logs still contain sensor IDs, measurements, timestamps,
