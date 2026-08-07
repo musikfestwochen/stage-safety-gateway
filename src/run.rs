@@ -448,9 +448,15 @@ fn reader_loop(
                                 "queued sensor={} kind={}",
                                 request.sensor_identifier, reading.kind
                             );
-                            route.stats.lock().queued += 1;
-                            if let Some(dropped) = route.queue.push(request) {
-                                route.stats.lock().dropped += 1;
+                            let dropped = route.queue.push(request);
+                            {
+                                let mut health = route.stats.lock();
+                                health.queued += 1;
+                                if dropped.is_some() {
+                                    health.dropped += 1;
+                                }
+                            }
+                            if let Some(dropped) = dropped {
                                 warn!(
                                     "sensor={}: queue full; dropped oldest request observed_at={}",
                                     dropped.sensor_identifier, dropped.observed_at
@@ -536,7 +542,7 @@ fn sleep_while_running(running: &AtomicBool, duration: Duration) {
 }
 
 fn should_log_reconnect_failure(attempts: u64) -> bool {
-    attempts == 1 || attempts % 60 == 0
+    attempts == 1 || attempts.is_multiple_of(60)
 }
 
 fn sender_loop(
