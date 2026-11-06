@@ -20,6 +20,7 @@ use std::time::Duration;
 
 mod run;
 
+#[cfg(any(target_os = "linux", test))]
 const SYSTEMD_SERVICE: &str = include_str!("../packaging/systemd/stage-safety-gateway.service");
 
 #[derive(Parser)]
@@ -159,6 +160,7 @@ fn install_service(_config_path: &Path) -> Result<()> {
     bail!("systemd service installation is supported only on Linux")
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn systemd_quote_path(path: &Path) -> Result<String> {
     let path = path.to_str().context("systemd path is not valid UTF-8")?;
     if path.contains(['\n', '\r']) {
@@ -172,6 +174,7 @@ fn systemd_quote_path(path: &Path) -> Result<String> {
     Ok(format!("\"{path}\""))
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn render_service_unit(executable: &Path, config_path: &Path) -> Result<String> {
     let executable = systemd_quote_path(executable)?;
     let config_path = systemd_quote_path(config_path)?;
