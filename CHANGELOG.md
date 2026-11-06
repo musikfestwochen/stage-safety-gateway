@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1](https://github.com/musikfestwochen/stage-safety-gateway/compare/v2.2.0...v2.2.1) - 2026-11-06
+
+### Fixed
+
+- compile systemd helpers only on Linux or in tests
+
+### Other
+
+- add security audit skill with automated updates
+
 ## [2.2.0](https://github.com/musikfestwochen/stage-safety-gateway/compare/v2.1.1...v2.2.0) - 2026-08-07
 
 ### Added
